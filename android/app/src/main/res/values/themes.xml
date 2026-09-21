@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Gabriel Piñones
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<resources>
+    <style name="Theme.Baze" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

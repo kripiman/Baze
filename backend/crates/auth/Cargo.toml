@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+shared.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+utoipa.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

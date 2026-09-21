@@ -1,0 +1,735 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Baze API",
+    "description": "Collaborative Bicycle Navigation REST & Realtime API",
+    "contact": {
+      "name": "Gabriel Piñones"
+    },
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/auth/anonymous": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "anonymous_auth_handler",
+        "responses": {
+          "201": {
+            "description": "Anonymous account created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/api/v1/geocoding/search": {
+      "get": {
+        "tags": [
+          "geocoding"
+        ],
+        "operationId": "geocoding_handler",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Geocoding suggestions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GeocodingItem"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      }
+    },
+    "/api/v1/hazards": {
+      "get": {
+        "tags": [
+          "hazards"
+        ],
+        "operationId": "list_hazards_handler",
+        "parameters": [
+          {
+            "name": "min_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "min_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "max_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "max_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active hazards within bounding box",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Hazard"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bbox query"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "hazards"
+        ],
+        "operationId": "create_hazard_handler",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateHazardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Hazard reported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hazard"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed"
+          },
+          "401": {
+            "description": "Unauthorized caller"
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/hazards/{id}/vote": {
+      "post": {
+        "tags": [
+          "hazards"
+        ],
+        "operationId": "vote_hazard_handler",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Hazard ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HazardVoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Vote registered and hazard updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Hazard"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid vote payload"
+          },
+          "401": {
+            "description": "Unauthorized caller"
+          },
+          "404": {
+            "description": "Hazard not found"
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/routing/route": {
+      "post": {
+        "tags": [
+          "routing"
+        ],
+        "operationId": "route_handler",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Calculated bicycle route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid coordinates"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "health_handler",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/source": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "source_handler",
+        "responses": {
+          "200": {
+            "description": "Source code repository and commit info (AGPL-3.0 compliance)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuthResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "token",
+          "created_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateHazardRequest": {
+        "type": "object",
+        "required": [
+          "category",
+          "hazard_type",
+          "location"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hazard_type": {
+            "$ref": "#/components/schemas/HazardType"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          }
+        }
+      },
+      "GeoJsonBbox": {
+        "type": "object",
+        "required": [
+          "min_lon",
+          "min_lat",
+          "max_lon",
+          "max_lat"
+        ],
+        "properties": {
+          "max_lat": {
+            "type": "number",
+            "format": "double"
+          },
+          "max_lon": {
+            "type": "number",
+            "format": "double"
+          },
+          "min_lat": {
+            "type": "number",
+            "format": "double"
+          },
+          "min_lon": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "GeoJsonLineString": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "description": "Array of [longitude, latitude]"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "GeoJsonPoint": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "[longitude, latitude]"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "GeoJsonPolygon": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "format": "double"
+                }
+              }
+            },
+            "description": "Array of linear rings of [longitude, latitude]"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "GeocodingItem": {
+        "type": "object",
+        "required": [
+          "name",
+          "location"
+        ],
+        "properties": {
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          },
+          "name": {
+            "type": "string"
+          },
+          "street": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Hazard": {
+        "type": "object",
+        "required": [
+          "id",
+          "creator_account_id",
+          "category",
+          "hazard_type",
+          "status",
+          "upvotes",
+          "downvotes",
+          "location",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "creator_account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "downvotes": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "hazard_type": {
+            "$ref": "#/components/schemas/HazardType"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HazardStatus"
+          },
+          "upvotes": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "HazardStatus": {
+        "type": "string",
+        "enum": [
+          "unconfirmed",
+          "confirmed",
+          "resolved"
+        ]
+      },
+      "HazardType": {
+        "type": "string",
+        "enum": [
+          "warning",
+          "blocking"
+        ]
+      },
+      "HazardVoteRequest": {
+        "type": "object",
+        "required": [
+          "vote_type"
+        ],
+        "properties": {
+          "vote_type": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 for upvote, -1 for downvote"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "RouteManeuver": {
+        "type": "object",
+        "required": [
+          "instruction",
+          "distance_meters",
+          "time_seconds",
+          "location"
+        ],
+        "properties": {
+          "distance_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "instruction": {
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          },
+          "time_seconds": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "RouteRequest": {
+        "type": "object",
+        "required": [
+          "origin",
+          "destination"
+        ],
+        "properties": {
+          "destination": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
+          }
+        }
+      },
+      "RouteResponse": {
+        "type": "object",
+        "required": [
+          "distance_meters",
+          "duration_seconds",
+          "ascent_meters",
+          "descent_meters",
+          "geometry",
+          "maneuvers",
+          "nearby_hazards"
+        ],
+        "properties": {
+          "ascent_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "descent_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "distance_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "duration_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/GeoJsonLineString"
+          },
+          "maneuvers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteManeuver"
+            }
+          },
+          "nearby_hazards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Hazard"
+            }
+          }
+        }
+      },
+      "SourceResponse": {
+        "type": "object",
+        "required": [
+          "repository",
+          "commit",
+          "license"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "license": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer_auth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Token",
+        "description": "Anonymous bearer token in format: baze_anon_<uuid>.<sig>"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "System health and AGPL source distribution"
+    },
+    {
+      "name": "auth",
+      "description": "Anonymous account provisioning"
+    },
+    {
+      "name": "hazards",
+      "description": "Hazard reporting and voting"
+    },
+    {
+      "name": "routing",
+      "description": "Bicycle routing with confirmed hazard avoidance"
+    },
+    {
+      "name": "geocoding",
+      "description": "Address search via Photon proxy"
+    }
+  ]
+}

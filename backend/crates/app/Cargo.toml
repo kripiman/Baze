@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "baze-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "baze_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "baze-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "export-openapi"
+path = "src/bin/export_openapi.rs"
+
+[dependencies]
+shared.workspace = true
+auth.workspace = true
+hazards.workspace = true
+routing.workspace = true
+geocoding.workspace = true
+realtime.workspace = true
+
+axum.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true

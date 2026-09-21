@@ -1,0 +1,78 @@
+{
+  "version": 8,
+  "name": "Baze Bike Navigation Style",
+  "metadata": {
+    "maputnik:license": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "baze:purpose": "Optimized vector style for urban bicycle navigation"
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "pmtiles://file:///data/user/0/cl.baze.app/files/tiles.pmtiles"
+    }
+  },
+  "sprite": "https://localhost/static/styles/sprites/sprite",
+  "glyphs": "https://localhost/static/styles/glyphs/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#f8f9fa"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#a5bfdd"
+      }
+    },
+    {
+      "id": "park",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": {
+        "fill-color": "#d8e8c8",
+        "fill-opacity": 0.8
+      }
+    },
+    {
+      "id": "road_minor",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["all", ["==", "$type", "LineString"], ["in", "class", "minor", "service", "track"]],
+      "paint": {
+        "line-color": "#e2e8f0",
+        "line-width": 1.5
+      }
+    },
+    {
+      "id": "road_major",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["all", ["==", "$type", "LineString"], ["in", "class", "primary", "secondary", "tertiary"]],
+      "paint": {
+        "line-color": "#cbd5e1",
+        "line-width": 2.5
+      }
+    },
+    {
+      "id": "cycleway_highlight",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["all", ["==", "$type", "LineString"], ["==", "subclass", "cycleway"]],
+      "paint": {
+        "line-color": "#10b981",
+        "line-width": 3.5,
+        "line-opacity": 0.9
+      }
+    }
+  ]
+}

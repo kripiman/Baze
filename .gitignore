@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Rust (NO ignorar Cargo.lock ni backend/.sqlx/)
+backend/target/
+target/
+
+# Android / Gradle (NO ignorar gradle/wrapper/gradle-wrapper.jar)
+**/.gradle/
+**/build/
+android/local.properties
+.idea/
+*.iml
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.jks
+*.keystore
+keystore.properties
+
+# Datos generados
+*.osm.pbf
+*.pmtiles
+data/out/
+graphify-out/
+
+# Secretos
+.env
+.env.*
+!.env.example
+
+# Editor, SO y logs
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.log

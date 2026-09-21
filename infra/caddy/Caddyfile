@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+{$DOMAIN:localhost} {
+    # Compresión gzip y zstd
+    encode gzip zstd
+
+    # Cabeceras de seguridad globales
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Servir archivos estáticos (PMTiles, estilos, sprites, glifos)
+    # CORS restringido exclusivamente al servicio de teselas y artefactos estáticos
+    handle_path /static/* {
+        header {
+            Access-Control-Allow-Origin "*"
+            Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+            Access-Control-Allow-Headers "Range, Content-Type"
+            Access-Control-Expose-Headers "Content-Range, Content-Length"
+        }
+        root * /var/www/static
+        file_server {
+            browse
+        }
+    }
+
+    # Proxy reverso al backend Rust (API, /health, /source, /api/v1/*)
+    # Sin duplicación de cabeceras Access-Control-Allow-Origin
+    handle {
+        reverse_proxy backend:8080 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            # Soporte de streaming para SSE
+            flush_interval -1
+        }
+    }
+
+    log {
+        output stdout
+        format console
+    }
+}

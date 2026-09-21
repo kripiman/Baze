@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: baze
+
+services:
+  caddy:
+    image: caddy:2.9.1-alpine
+    container_name: baze-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ../data/out:/var/www/static:ro
+    networks:
+      - public
+      - internal
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: baze-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080" # Solo expuesto a localhost en desarrollo
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:?Set ENVIRONMENT explicitly to development or production in .env}
+      - PORT=${PORT:-8080}
+      - HOST=${HOST:-0.0.0.0}
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL explicitly in .env}
+      - VALHALLA_URL=${VALHALLA_URL:-http://valhalla:8002}
+      - PHOTON_URL=${PHOTON_URL:-http://photon:2322}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET explicitly in .env}
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
+      - HAZARD_CONFIRMATION_THRESHOLD=${HAZARD_CONFIRMATION_THRESHOLD:-3}
+      - HAZARD_DEFAULT_TTL_HOURS=${HAZARD_DEFAULT_TTL_HOURS:-24}
+      - SOURCE_REPO_URL=${SOURCE_REPO_URL:-https://github.com/kripiman/Baze}
+      - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-dev}
+    networks:
+      - internal
+    depends_on:
+      postgis:
+        condition: service_healthy
+
+  postgis:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: baze-postgis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432" # Solo expuesto a localhost en desarrollo
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-baze_db}
+      - POSTGRES_USER=${POSTGRES_USER:-baze_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD explicitly in .env}
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-baze_user} -d ${POSTGRES_DB:-baze_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  valhalla:
+    image: gisops/valhalla:3.4.0
+    container_name: baze-valhalla
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8002:8002" # Solo expuesto a localhost en desarrollo
+    volumes:
+      - ../data/out/valhalla:/custom_files:ro
+    networks:
+      - internal
+
+  photon:
+    image: ghcr.io/komoot/photon:0.5.0 # TODO(verify): Verificar compatibilidad de la imagen y arquitectura
+    container_name: baze-photon
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2322:2322" # Solo expuesto a localhost en desarrollo
+    volumes:
+      - ../data/out/photon:/photon/photon_data:ro
+    networks:
+      - internal
+
+networks:
+  public:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgis_data:
+  caddy_data:
+  caddy_config:

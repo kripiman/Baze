@@ -208,9 +208,19 @@ Sí se puede consultar desde el sandbox: GitHub (`git ls-remote`, assets de rele
 
 | Etapa | Estado | Commits | Evidencia de CI |
 |---|---|---|---|
-| Handoff (este documento) | En curso | — | — |
-| 0 — resync SSE, AGENTS.md, licensee | Pendiente | — | — |
-| A — clientes Valhalla y Photon | Pendiente | — | — |
-| B — pipeline de datos y smoke | Pendiente | — | — |
+| Handoff (este documento) | Hecho | `8441244` | Secrets Audit verde |
+| 0 — resync SSE, AGENTS.md, licensee | **Hecho** | `a5275e2`, `321a2b2`, `d5fdee2`, `46ab936` | Backend CI verde; Android CI verde (run 37225225205; el primer intento murió por `OutOfMemoryError` del demonio de Gradle y se subió el heap a 3 GB) |
+| A — clientes Valhalla y Photon | **Hecho** | `688f0dc`, `5ff9f81`, `f984625`, `7d1d24d`, `32a75bf`, `371c3bd`, `abaccc9` | Backend CI, Infrastructure CI, Secrets y Security verdes en `371c3bd` (e2e hasta el paso 11 incluido) |
+| B — pipeline de datos y smoke | En curso | — | — |
 | C — Android funcional | No autorizada | — | — |
 | D — documentación de cierre | No autorizada | — | — |
+
+### Validación local con motores reales (Etapas 0 y A)
+
+Además de los motores simulados, el cliente se probó contra **Valhalla 3.9.0 real** (rueda `pyvalhalla` con un extracto de Utrecht y una tesela de elevación sintética) y **Photon 1.3.0 real** (el JAR oficial importando `data/fixtures/photon-monaco.jsonl`). Resultados:
+
+- La ruta base, los textos en español, el ascenso/descenso (`elevation_interval`), el desvío alrededor de un cierre confirmado (a ~65 m del cierre) y el rechazo de uno sin confirmar funcionan tal como en los dobles de prueba.
+- Un cierre sobre la vía en el origen o en el destino da `404` (fail-closed), y tres cierres seguidos se esquivan con un solo desvío.
+- Un punto fuera del extracto da `404` con el código real de Valhalla.
+- La búsqueda devuelve los resultados esperados (`name`, `street` + número, `city`, `country`) y trata `limit=1000&…` como texto.
+- Hallazgo corregido: el filtro de logs por defecto ocultaba los avisos del crate `routing` (`abaccc9`).

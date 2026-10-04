@@ -33,10 +33,15 @@ baze/
 ├── .editorconfig             # Reglas de formato unificadas
 ├── .gitignore                # Reglas de exclusión de git
 ├── .gitattributes            # Normalización LF y binarios
-├── .github/workflows/
-│   ├── backend.yml           # CI de Rust (fmt, clippy, test, cargo-deny)
-│   ├── android.yml           # CI de Android (lint, test, assembleDebug, licencias)
-│   └── secrets.yml           # Auditoría de secretos con Gitleaks
+├── scripts/                  # check-toolchain-sync, compose-check, gen-env y e2e/ (regresión de abuso contra el binario real)
+├── .github/
+│   ├── CODEOWNERS, dependabot.yml, PULL_REQUEST_TEMPLATE.md, ISSUE_TEMPLATE/
+│   └── workflows/
+│       ├── backend.yml       # CI de Rust: fmt, clippy -D warnings, tests con PostGIS, e2e, contrato OpenAPI, cargo-deny, MSRV 1.88
+│       ├── infra.yml         # CI de infraestructura: compose, Caddyfile, shellcheck y pila real con sus invariantes
+│       ├── android.yml       # CI de Android: lint, test, checkPurity, assembleDebug/Release (R8), licencias
+│       ├── security.yml      # Avisos RustSec y crates retirados (programado)
+│       └── secrets.yml       # Auditoría de secretos con Gitleaks
 ├── contracts/
 │   └── openapi.json          # Contrato OpenAPI generado desde el backend con utoipa
 ├── backend/                  # Monolito modular en Rust (edition 2024)
@@ -45,7 +50,7 @@ baze/
 │   ├── rust-toolchain.toml   # Versión y componentes del toolchain
 │   ├── deny.toml             # Allowlist de licencias y seguridad
 │   ├── Dockerfile            # Multi-stage con cargo-chef y usuario no root
-│   ├── migrations/           # Migraciones SQLx (PostGIS)
+│   ├── migrations/           # Migraciones SQLx (PostGIS); las aplicadas nunca se editan
 │   └── crates/
 │       ├── app/              # Binario ejecutable, wiring, Axum router, /health, /source
 │       ├── shared/           # Tipos GeoJSON, errores y traits de dominio (SIN IO)
@@ -74,15 +79,18 @@ baze/
 │   ├── compose.yaml          # Orquestación (Caddy, Backend, PostGIS, Valhalla, Photon)
 │   ├── compose.dev.yaml      # Superposición solo para desarrollo (puertos en 127.0.0.1)
 │   ├── caddy/Caddyfile       # Configuración TLS y proxy reverso
-│   └── .env.example          # Plantilla de variables de entorno
+│   ├── postgres/init/        # Roles de BD (propietario que migra, `baze_app` sin DDL)
+│   └── .env.example          # Plantilla de variables de entorno (sin secretos; `make dev-env` los genera)
 ├── data/                     # Pipeline de ingestión y compilación de datos OSM
 │   ├── README.md             # Instrucciones paso a paso
-│   ├── scripts/              # 01-download, 02-pmtiles, 03-valhalla, 04-photon
+│   ├── scripts/              # 01-download, 02-pmtiles, 03-valhalla, 04-photon, 05-publish-static
 │   ├── styles/               # style.json de MapLibre, sprites y glifos
 │   └── out/                  # Artefactos compilados (.pmtiles, grafo, índice)
 └── docs/
     ├── architecture.md       # Diagrama y detalle de reglas de dominio
-    └── adr/                  # Architecture Decision Records
+    ├── operations.md         # Despliegue, secretos, copias, rotación y verificación
+    ├── ESTADO-DEL-PROYECTO.md # Traspaso: qué está hecho, qué falta y cómo retomar
+    └── adr/                  # Architecture Decision Records (0001-0008)
 ```
 
 ---
@@ -95,17 +103,23 @@ baze/
 cargo fmt --all --check
 
 # Linter de código estricto
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-# Pruebas unitarias y de integración
-cargo test --workspace
+# Pruebas unitarias y de integración (sin base de datos)
+cargo test --locked --workspace
+
+# Con PostgreSQL+PostGIS desechable (sqlx::test crea una base por prueba; nunca apuntar a datos reales)
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test --locked --workspace --all-features
 
 # Verificación de licencias y vulnerabilidades
 cargo deny check
 
-# Generación del contrato OpenAPI
-cargo run -p baze-app --bin export-openapi
+# Contrato OpenAPI: regenerar y verificar que está al día
+cargo run --locked -p baze-app --bin export-openapi            # escribe contracts/openapi.json
+cargo run --locked -p baze-app --bin export-openapi -- --check
 ```
+
+Los atajos equivalentes están en el `Makefile`: `make backend-check` (fmt, clippy, tests y contrato), `make backend-db-test`, `make backend-deny`, `make toolchain-check`, `make openapi`, `make compose-check`. Todos se ejecutan desde la raíz; las recetas entran en `backend/` porque `rustup` resuelve `rust-toolchain.toml` desde el directorio de trabajo.
 
 ### Android (Kotlin / Gradle)
 ```bash
@@ -118,7 +132,10 @@ cd android && ./gradlew test
 # Linter de Android
 cd android && ./gradlew lint
 
-# Verificación de licencias de dependencias
+# Pureza de core/model y core/domain (sin android.* ni java.*)
+cd android && ./gradlew checkPurity
+
+# Verificación de licencias de dependencias (el CI lo corre junto con lint, test y assembleRelease)
 cd android && ./gradlew checkLicenses
 ```
 
@@ -127,11 +144,16 @@ cd android && ./gradlew checkLicenses
 # Validar docker compose y sus invariantes de seguridad (no arranca nada; usa valores falsos)
 bash scripts/compose-check.sh
 
-# Ejecutar el pipeline de datos (desde la raíz)
+# Regresión de abuso contra el binario real (necesita PostgreSQL; ver la cabecera del script)
+url="$(bash scripts/e2e/prepare-db.sh "$DATABASE_URL")"
+python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through 10
+
+# Ejecutar el pipeline de datos (desde la raíz; también `make data-build`)
 bash data/scripts/01-download-extract.sh
 bash data/scripts/02-build-pmtiles.sh
 bash data/scripts/03-build-valhalla.sh
 bash data/scripts/04-build-photon.sh
+bash data/scripts/05-publish-static.sh
 ```
 
 ---
@@ -156,7 +178,7 @@ bash data/scripts/04-build-photon.sh
    - `warning` (vidrio, bache, calzada irregular): solo genera alertas visuales/sonoras.
    - `blocking` (calle cortada, obra, inundación): afecta el ruteo **solo cuando está confirmado** por el umbral de votos comunitarios.
 2. **Evitación en Valhalla**: El backend solicita la ruta base a Valhalla, comprueba en PostGIS si la geometría interseca bloqueos confirmados, y solo ante intersecciones relanza la solicitud enviando `exclude_polygons`.
-3. **Alertas y SSE**: El servidor entrega peligros cercanos a la ruta en la respuesta inicial. El stream SSE solo notifica eventos nuevos en el bounding box de la ruta activa.
+3. **Alertas y SSE**: El servidor entrega peligros cercanos a la ruta en la respuesta inicial. El stream SSE solo notifica eventos nuevos o cambiados en el bounding box de la ruta activa (`event: hazard`). Un cliente que se queda atrás recibe `event: resync` y debe volver a pedir `GET /api/v1/hazards`: nunca se pierden eventos en silencio.
 4. **Expiración**: Los reportes se descartan mediante `expires_at` en toda consulta SQL y un job periódico purga registros caducados.
 
 ---
@@ -175,9 +197,9 @@ bash data/scripts/04-build-photon.sh
 ## 6. Procedimiento de Verificación de Cambios
 
 Antes de considerar una tarea completada:
-1. Validar compilación de backend: `cargo check --workspace --all-targets`.
-2. Validar que no existan advertencias de clippy: `cargo clippy --workspace --all-targets -- -D warnings`.
-3. Verificar formato: `cargo fmt --all -- --check`.
-4. Validar Docker Compose: `bash scripts/compose-check.sh` (`make compose-check`).
-5. Si el SDK de Android está configurado: `cd android && ./gradlew assembleDebug`.
+1. Backend: `make backend-check` (formato, clippy `-D warnings`, tests y contrato OpenAPI al día). Si el cambio toca la base de datos o la votación, también `make backend-db-test` con un PostgreSQL+PostGIS desechable.
+2. Si cambian las rutas, los esquemas o la documentación de la API: `make openapi` y commitear `contracts/openapi.json`.
+3. Validar Docker Compose y shell: `bash scripts/compose-check.sh` (`make compose-check`) y `shellcheck` sobre `scripts/` y `data/scripts/`.
+4. Si el SDK de Android está configurado: `cd android && ./gradlew lint test checkPurity assembleDebug`.
+5. Tras empujar, comprobar que los workflows de GitHub pasan (backend, infra, android, secrets, security).
 6. Confirmar que no se hayan generado archivos no deseados fuera de `.gitignore`.

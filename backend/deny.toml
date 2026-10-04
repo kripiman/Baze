@@ -1,14 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+# Schema of cargo-deny >= 0.19. CI pins the exact version (see .github/workflows/backend.yml);
+# when bumping it, run `cargo deny check` locally first.
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
+# Security vulnerabilities always fail the check; there is no key for it in this schema.
+# Check only the crates that end up in our own dependency tree, and fail on yanked releases.
+unmaintained = "workspace"
+yanked = "deny"
 ignore = []
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "AGPL-3.0-or-later",
     "MIT",
@@ -19,13 +22,17 @@ allow = [
     "MPL-2.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
-    "Zlib"
+    "Zlib",
 ]
 confidence-threshold = 0.8
+# The allow-list is a policy, not an inventory of what is currently in use.
+unused-allowed-license = "allow"
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace crates depend on each other through `path` only (they are `publish = false`).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

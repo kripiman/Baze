@@ -9,8 +9,12 @@ the remediation step (`since`) after which it must pass, so the script doubles a
 progress meter: run it with `--through N` to enforce every check up to step N.
 
     cargo build --manifest-path backend/Cargo.toml -p baze-app
-    python3 scripts/e2e/audit_regression.py                 # report only
-    python3 scripts/e2e/audit_regression.py --through 3     # fail if a step <= 3 regressed
+    url="$(bash scripts/e2e/prepare-db.sh postgres://postgres:postgres@127.0.0.1:5432/postgres)"
+    python3 scripts/e2e/audit_regression.py --database-url "$url"              # report only
+    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 8  # fail if a step <= 8 regressed
+
+The server needs a real database (accounts live in it): prepare-db.sh builds a disposable one the same way
+the compose stack does, with the low-privilege `baze_app` role the production backend insists on.
 
 Standard library only.
 """
@@ -37,7 +41,9 @@ DEFAULT_BINARY = os.path.join(REPO, "backend", "target", "debug", "baze-server")
 PUBLIC_EXAMPLE_SECRET = "change_me_to_a_random_32_bytes_secret_key_in_production"
 # Fixtures are generated on every run: no key-like literal is committed to the repository.
 STRONG_SECRET = secrets.token_hex(32)
-DB_URL = f"postgres://baze_app:{secrets.token_urlsafe(18)}@127.0.0.1:1/baze_db"  # lazy pool, never connected
+# Set from --database-url / --admin-database-url before any server starts.
+DB_URL = ""
+ADMIN_DB_URL = ""
 GOOD_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 POINT = {"type": "Point", "coordinates": [-70.65, -33.45]}
@@ -178,6 +184,14 @@ def _(binary):
 def _(binary):
     code, _ = boot_exit(binary, GIT_COMMIT_HASH=None)
     return code not in (None, 0), f"exit={code}"
+
+
+@check("SEC-08", "production boot refuses a database role with superuser powers", 7)
+def _(binary):
+    if not ADMIN_DB_URL:
+        return True, "skipped: pass --admin-database-url to run this check"
+    code, output = boot_exit(binary, DATABASE_URL=ADMIN_DB_URL)
+    return code not in (None, 0) and "excess privileges" in output, f"exit={code}"
 
 
 @check("FUN-01", "routing and geocoding answer 501 instead of fake data", 3)
@@ -321,12 +335,31 @@ def _(binary):
         return r == (201, 400, 400, 400), f"300xñ,501,NUL,bidi={r}"
 
 
-@check("SEC-06", "only the canonical token form authenticates (no uppercase or alternate UUID spellings)", 8)
+@check("SEC-06", "tokens carry an expiry", 8)
+def _(binary):
+    with server(binary) as (port, _):
+        status, text, _ = call(port, "POST", "/api/v1/auth/anonymous", ip="198.51.100.60")
+        if status != 201:
+            return False, f"status={status}"
+        body = json.loads(text)
+        expires = body.get("expires_at")
+        if not expires:
+            return False, "no expires_at in the response"
+        from datetime import datetime, timezone
+
+        remaining = datetime.fromisoformat(expires.replace("Z", "+00:00")) - datetime.now(timezone.utc)
+        return (
+            body["token"].startswith("baze_v2.") and 100 < remaining.days <= 730,
+            f"prefix ok={body['token'].startswith('baze_v2.')} days left={remaining.days}",
+        )
+
+
+@check("SEC-06", "only the canonical token form authenticates (no uppercase spellings)", 8)
 def _(binary):
     with server(binary) as (port, _):
         tok = signup(port, "198.51.100.61")
-        body, sig = tok.rsplit(".", 1)
-        variants = [body + "." + sig.upper(), body.replace("-", "") + "." + sig]
+        payload, mac = tok.removeprefix("baze_v2.").split(".")
+        variants = [f"baze_v2.{payload.upper()}.{mac}", f"baze_v2.{payload}.{mac.upper()}"]
         codes = [
             call(port, "POST", "/api/v1/hazards", {"category": "glass", "location": POINT}, bearer(v), ip="198.51.100.61")[0] for v in variants
         ]
@@ -358,12 +391,27 @@ def _(binary):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", default=DEFAULT_BINARY, help="path to baze-server (default: backend debug build)")
+    ap.add_argument(
+        "--database-url",
+        default=os.environ.get("AUDIT_DATABASE_URL"),
+        help="DATABASE_URL of the low-privilege role on a migrated database (see scripts/e2e/prepare-db.sh)",
+    )
+    ap.add_argument(
+        "--admin-database-url",
+        default=os.environ.get("AUDIT_ADMIN_DATABASE_URL"),
+        help="optional superuser URL, only used to prove the server refuses to run as one",
+    )
     ap.add_argument("--through", type=int, default=-1, help="enforce every check whose step is <= N (default: report only)")
     ap.add_argument("--only", help="comma-separated finding ids to run, e.g. SEC-01,SEC-02")
     args = ap.parse_args()
 
     if not os.access(args.binary, os.X_OK):
         sys.exit(f"binary not found: {args.binary} (build it first)")
+    if not args.database_url:
+        sys.exit("--database-url is required (create one with scripts/e2e/prepare-db.sh)")
+    global DB_URL, ADMIN_DB_URL
+    DB_URL = args.database_url
+    ADMIN_DB_URL = args.admin_database_url or ""
 
     wanted = set(args.only.split(",")) if args.only else None
     failures = 0

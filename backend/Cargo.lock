@@ -1420,11 +1420,15 @@ name = "routing"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "chrono",
  "reqwest",
  "serde",
  "serde_json",
  "shared",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -17,3 +17,10 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+
+[dev-dependencies]
+# An in-process stand-in for Valhalla, so the client and the closure-avoidance loop run for real.
+axum.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true

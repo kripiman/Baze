@@ -10,16 +10,17 @@ authors.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Tests that need a PostgreSQL + PostGIS server (see the db-tests feature of baze-app).
+db-tests = []
+
 [dependencies]
 shared.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
-utoipa.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true

@@ -1,132 +1,93 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use shared::AppError;
-use sqlx::PgPool;
-use utoipa::ToSchema;
+//! Anonymous accounts. An account is a row in `accounts` plus a signed, expiring bearer token (see
+//! [`token`]); the row is what makes accounts real: it records when the account was created and lets
+//! an operator switch an abusive one off (`is_active = false`) without waiting for its token to expire.
+
+pub mod token;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
+use shared::{AccountContext, AccountService, AppError, AuthResponse};
+use sqlx::{PgPool, Row};
+use std::sync::Arc;
+use token::{TokenError, TokenKeys};
 use uuid::Uuid;
-
-type HmacSha256 = Hmac<Sha256>;
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AuthResponse {
-    pub account_id: Uuid,
-    pub token: String,
-    pub created_at: DateTime<Utc>,
-}
 
 #[derive(Clone)]
 pub struct AuthService {
-    #[allow(dead_code)]
     pool: PgPool,
-    jwt_secret: String,
+    keys: Arc<TokenKeys>,
+    token_ttl: Duration,
 }
 
 impl AuthService {
-    pub fn new(pool: PgPool, jwt_secret: String) -> Self {
-        Self { pool, jwt_secret }
+    pub fn new(pool: PgPool, keys: TokenKeys, token_ttl: Duration) -> Self {
+        Self {
+            pool,
+            keys: Arc::new(keys),
+            token_ttl,
+        }
     }
+}
 
-    fn compute_signature(&self, account_id: &Uuid) -> String {
-        let mut mac = HmacSha256::new_from_slice(self.jwt_secret.as_bytes())
-            .expect("HMAC can take key of any size");
-        mac.update(account_id.as_bytes());
-        hex::encode(mac.finalize().into_bytes())
+/// Every reason a token can be refused looks the same to the caller, apart from plain expiry (which is
+/// only reported once the signature has checked out), so errors cannot be used to probe tokens.
+fn unauthorized(error: TokenError) -> AppError {
+    match error {
+        TokenError::Expired => AppError::Unauthorized("Token expired".into()),
+        _ => invalid_token(),
     }
+}
 
-    pub async fn create_anonymous_account(&self) -> Result<AuthResponse, AppError> {
-        // TODO(verify): Implementar inserción SQL en la tabla `accounts`
+fn invalid_token() -> AppError {
+    AppError::Unauthorized("Invalid authorization token".into())
+}
+
+fn store_error(error: sqlx::Error) -> AppError {
+    AppError::Internal(format!("account store: {error}"))
+}
+
+#[async_trait]
+impl AccountService for AuthService {
+    async fn create_anonymous_account(&self) -> Result<AuthResponse, AppError> {
         let account_id = Uuid::new_v4();
-        let now = Utc::now();
-        let sig = self.compute_signature(&account_id);
-        let token = format!("baze_anon_{}.{}", account_id, sig);
+        let created_at: DateTime<Utc> =
+            sqlx::query_scalar("INSERT INTO accounts (id) VALUES ($1) RETURNING created_at")
+                .bind(account_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(store_error)?;
 
-        tracing::info!(account_id = %account_id, "Emitted new signed anonymous account");
+        let (token, claims) = token::issue(&self.keys, account_id, Utc::now(), self.token_ttl);
+        tracing::debug!(%account_id, "Created an anonymous account");
 
         Ok(AuthResponse {
             account_id,
             token,
-            created_at: now,
+            created_at,
+            expires_at: claims.expires_at,
         })
     }
 
-    pub async fn validate_token(&self, token: &str) -> Result<Uuid, AppError> {
-        let stripped = token
-            .strip_prefix("baze_anon_")
-            .ok_or_else(|| AppError::Unauthorized("Invalid authorization token format".into()))?;
+    async fn authenticate(&self, token: &str) -> Result<AccountContext, AppError> {
+        let claims = token::verify(&self.keys, token, Utc::now()).map_err(unauthorized)?;
 
-        let mut parts = stripped.split('.');
-        let id_str = parts
-            .next()
-            .ok_or_else(|| AppError::Unauthorized("Missing account ID in token".into()))?;
-        let sig_str = parts.next().ok_or_else(|| {
-            AppError::Unauthorized("Missing cryptographic signature in token".into())
-        })?;
+        // A valid signature proves the token was issued, not that the account is still welcome.
+        let account = sqlx::query("SELECT created_at, is_active FROM accounts WHERE id = $1")
+            .bind(claims.account_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(store_error)?;
 
-        if parts.next().is_some() {
-            return Err(AppError::Unauthorized("Malformed token structure".into()));
+        match account {
+            Some(row) if row.get::<bool, _>("is_active") => Ok(AccountContext {
+                account_id: claims.account_id,
+                created_at: row.get("created_at"),
+            }),
+            // Unknown and deactivated accounts are indistinguishable from a bad token.
+            _ => Err(invalid_token()),
         }
-
-        let account_id = Uuid::parse_str(id_str)
-            .map_err(|_| AppError::Unauthorized("Invalid account ID format in token".into()))?;
-
-        let sig_bytes = hex::decode(sig_str)
-            .map_err(|_| AppError::Unauthorized("Invalid hex signature format in token".into()))?;
-
-        // Verificación criptográfica en tiempo constante mediante Mac::verify_slice
-        let mut mac = HmacSha256::new_from_slice(self.jwt_secret.as_bytes())
-            .expect("HMAC can take key of any size");
-        mac.update(account_id.as_bytes());
-
-        if mac.verify_slice(&sig_bytes).is_err() {
-            tracing::warn!(account_id = %account_id, "Token signature verification failed");
-            return Err(AppError::Unauthorized("Invalid token signature".into()));
-        }
-
-        Ok(account_id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::postgres::PgPoolOptions;
-
-    #[tokio::test]
-    async fn test_token_creation_and_validation() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://localhost/dummy")
-            .unwrap();
-        let secret = "very_secure_test_secret_key_at_least_32_bytes_long".to_string();
-        let service = AuthService::new(pool, secret);
-
-        let auth_res = service.create_anonymous_account().await.unwrap();
-        assert!(auth_res.token.starts_with("baze_anon_"));
-
-        // Valid token passes
-        let validated_id = service.validate_token(&auth_res.token).await.unwrap();
-        assert_eq!(validated_id, auth_res.account_id);
-
-        // Forged signature fails
-        let forged_token = format!(
-            "baze_anon_{}.00112233445566778899aabbccddeeff",
-            auth_res.account_id
-        );
-        assert!(service.validate_token(&forged_token).await.is_err());
-
-        // Tampered account id fails
-        let other_id = Uuid::new_v4();
-        let parts: Vec<&str> = auth_res.token.split('.').collect();
-        let tampered_token = format!("baze_anon_{}.{}", other_id, parts[1]);
-        assert!(service.validate_token(&tampered_token).await.is_err());
-
-        // Invalid hex signature fails
-        let invalid_hex_token =
-            format!("baze_anon_{}.not_valid_hex_signature!", auth_res.account_id);
-        assert!(service.validate_token(&invalid_hex_token).await.is_err());
     }
 }

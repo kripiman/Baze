@@ -301,6 +301,34 @@ impl CreateHazardRequest {
     }
 }
 
+/// Response to creating an anonymous account.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AuthResponse {
+    pub account_id: Uuid,
+    /// Bearer token: `baze_v2.<payload>.<mac>`. Send it as `Authorization: Bearer <token>`.
+    pub token: String,
+    pub created_at: DateTime<Utc>,
+    /// The token stops working at this instant; create a new account afterwards.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// An authenticated, active account. Authentication reads the account row anyway, so the
+/// facts policies need (such as how old the account is) travel with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountContext {
+    pub account_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Anonymous accounts and the bearer tokens that identify them.
+#[async_trait]
+pub trait AccountService: Send + Sync {
+    async fn create_anonymous_account(&self) -> Result<AuthResponse, AppError>;
+
+    /// Resolves a bearer token to an active account, or fails with `Unauthorized`.
+    async fn authenticate(&self, token: &str) -> Result<AccountContext, AppError>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HazardVoteRequest {
     /// 1 for upvote, -1 for downvote

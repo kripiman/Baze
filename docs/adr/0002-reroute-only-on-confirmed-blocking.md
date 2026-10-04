@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 # ADR 0002: Re-ruteo Condicionado Exclusivamente a Bloqueos Confirmados
 
 ## Estado
-Aceptado
+Aceptado. Enmendado por [ADR-0007](0007-identity-voting-and-abuse-limits.md): un reporte también puede ser retirado por la comunidad (`resolved`).
 
 ## Contexto
 En una aplicación de navegación abierta, los reportes comunitarios presentan diferentes grados de severidad y certeza. Un reporte erróneo, malicioso o preliminar (ej. un usuario reportando una calle cortada por error) no debe penalizar drásticamente la ruta de todos los ciclistas ni causar desvíos innecesarios. Además, incidentes como "vidrio en la calzada" o "bache" son advertencias (`warning`) que demandan precaución pero no impiden el paso ni justifican desviar al usuario kilómetros alrededor.

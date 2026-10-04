@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 # ADR 0001: Monolito Modular en Backend
 
 ## Estado
-Aceptado
+Aceptado. Enmendado: la cifra de tamaño de imagen de las consecuencias no estaba medida (ver abajo).
 
 ## Contexto
 El sistema requiere gestionar autenticación anónima, geocodificación, persistencia espacial de reportes comunitarios, orquestación de ruteo ciclista y difusión de eventos en tiempo real. En proyectos modernos suele plantearse una separación temprana en microservicios, apoyados por brokers como Kafka o bases en memoria como Redis. Sin embargo, para la etapa inicial y MVP de Baze, la sobrecarga operativa, la latencia entre servicios, la dificultad de observabilidad y los costos de infraestructura en un solo VPS no justifican una arquitectura distribuida.
@@ -21,7 +21,7 @@ Implementar el backend como un **monolito modular en Rust** dentro de un único 
 
 ## Consecuencias
 ### Positivas
-- Despliegue extremadamente simple: un único contenedor Docker ligero (~20MB imagen final).
+- Despliegue simple: un único contenedor Docker ligero para el backend (más PostGIS y Caddy). Se retiró la cifra "~20MB", que nunca se midió; el CI (`infra.yml`, paso *Inspect the image*) imprime el tamaño real en cada ejecución y es la fuente de verdad hasta que se fije un presupuesto.
 - Tiempo de compilación optimizado y reutilización de caché por crate en Rust.
 - Sin costo de serialización interna de red (RPC/HTTP/gRPC) entre módulos.
 - Base de código limpia con límites de dominio explícitos y comprobados por el compilador de Rust.

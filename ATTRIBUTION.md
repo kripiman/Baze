@@ -10,7 +10,7 @@ Este proyecto utiliza y distribuye datos y software de terceros bajo las siguien
 ## 1. Datos de Mapas y Ruteo
 
 - **OpenStreetMap**: Los datos cartográficos, redes viales y puntos de interés provienen de [OpenStreetMap](https://www.openstreetmap.org/copyright), © Colaboradores de OpenStreetMap, distribuidos bajo la licencia [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/).
-- **Esquema de Tiles (OpenMapTiles / Planetiler)**: Los vector tiles generados mediante Planetiler utilizan la especificación de OpenMapTiles, © [OpenMapTiles](https://openmaptiles.org/).
+- **Esquema de Tiles (OpenMapTiles / Planetiler)**: Los vector tiles generados mediante Planetiler utilizan el esquema de OpenMapTiles, © [OpenMapTiles](https://openmaptiles.org/), bajo [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/): exige la atribución «© OpenMapTiles» junto a la de OpenStreetMap. `data/styles/style.json` la declara en la fuente de teselas (MapLibre la muestra) y `manifest.json` la publica.
 
 ### Requisitos de Atribución en la Aplicación
 1. **Vista de Mapa Principal**: La esquina inferior del mapa interactivo de la app móvil incluye de forma visible:
@@ -41,4 +41,6 @@ La sección "Acerca de" de la app, que listará estas dependencias con sus licen
 ## 4. Datos de Terceros en el Pipeline
 
 - **Extractos de OpenStreetMap**: descargados de [Geofabrik](https://download.geofabrik.de/), bajo ODbL (ver sección 1).
-- **Elevación (SRTM)**: usada por Valhalla para las pendientes de las rutas ciclistas (ver `data/scripts/03-build-valhalla.sh`). Antes de distribuir artefactos derivados, confirma las condiciones de uso del conjunto exacto que se descargue. <!-- TODO(verify): fijar la fuente y la licencia exactas del modelo de elevación -->
+- **Elevación**: `data/scripts/03-build-valhalla.sh` descarga las teselas de elevación «Terrain Tiles» (formato Skadi/HGT) del bucket público `elevation-tiles-prod` de AWS, un compuesto de varias fuentes abiertas (principalmente SRTM, y según la región 3DEP, EU-DEM, GMTED, entre otras; ver [la lista de fuentes](https://github.com/tilezen/joerd/blob/master/docs/data-sources.md)). Algunas exigen atribución; el texto requerido está en [la guía de atribución de Tilezen](https://github.com/tilezen/joerd/blob/master/docs/attribution.md). Para Chile se espera SRTM y GMTED2010 («terrain data courtesy of the U.S. Geological Survey»), que la sección «Acerca de» de la app debe citar junto a la de OpenStreetMap. <!-- TODO(verify): confirmar con el mapa de huellas de Tilezen qué fuentes cubren la región elegida -->
+- **Valhalla, Photon y Planetiler** se ejecutan como herramientas de construcción y servicio; no se enlazan con el código de Baze. Sus imágenes se fijan por digest o se construyen con checksum (ver `infra/compose.yaml`, `infra/photon/Dockerfile` y `data/scripts/`).
+- **Volcados de Photon**: los de GraphHopper se derivan de OpenStreetMap (ODbL); `data/fixtures/photon-monaco.jsonl` es un ejemplo mínimo escrito para el proyecto, con nombres y coordenadas de lugares públicos de Mónaco, solo para pruebas.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny backend-db-test toolchain-check dev-env openapi compose-check
+.PHONY: help dev-up dev-down backend-check android-build data-build style-check backend-test backend-fmt backend-clippy backend-deny backend-db-test toolchain-check dev-env openapi compose-check
 
 help:
 	@echo "Baze Monorepo Management"
@@ -19,7 +19,8 @@ help:
 	@echo "backend-deny   : cargo-deny checks (bans, licenses, sources, advisories)"
 	@echo "toolchain-check: Verify that every Rust toolchain pin agrees"
 	@echo "android-build  : Compile Android application (assembleDebug)"
-	@echo "data-build     : Run OSM data preparation pipeline (PMTiles, Valhalla, Photon)"
+	@echo "data-build     : Run the OSM data pipeline (extract, PMTiles, Valhalla with elevation, Photon if a source is set, publish)"
+	@echo "style-check    : Check the map style (data/styles/style.json)"
 
 dev-env:
 	bash scripts/gen-env.sh
@@ -80,5 +81,12 @@ data-build:
 	bash data/scripts/01-download-extract.sh
 	bash data/scripts/02-build-pmtiles.sh
 	bash data/scripts/03-build-valhalla.sh
-	bash data/scripts/04-build-photon.sh
+	@if [ -n "$$PHOTON_IMPORT_FILE$$PHOTON_DUMP_URL" ]; then \
+		bash data/scripts/04-build-photon.sh; \
+	else \
+		echo "WARNING: step 04 (Photon) skipped: set PHOTON_IMPORT_FILE or PHOTON_DUMP_URL and PHOTON_DUMP_SHA256 (see data/README.md). Address search stays unavailable."; \
+	fi
 	bash data/scripts/05-publish-static.sh
+
+style-check:
+	python3 scripts/check-style.py

@@ -93,9 +93,26 @@ Todas las variables se validan al arrancar. Vacío o ausente = valor por defecto
 | `ENABLE_API_DOCS` | `true` en development, `false` en production | `true`, `false` | Swagger UI y `/api-docs` |
 | `ENGINES_ENABLED` | `false` | `true`, `false` | Usar Valhalla y Photon; apagado, ruteo y búsqueda responden 501 |
 | `VALHALLA_URL`, `PHOTON_URL` | `http://localhost:8002`, `http://localhost:2322` | `http://` interno | Dónde están los motores (solo con `ENGINES_ENABLED=true`) |
+| `ENGINES_UID`, `ENGINES_GID` | `1000`, `1000` (`make dev-env` pone los tuyos) | uid/gid numéricos | Usuario con el que corren los motores: el dueño de `data/out` |
+| `VALHALLA_THREADS`, `PHOTON_JAVA_OPTS` | `2`, `-Xmx1g -Duser.home=/tmp` | número, opciones de JVM | Recursos de los motores (solo Compose) |
 | `SOURCE_REPO_URL`, `GIT_COMMIT_HASH` | repositorio, `dev` | `https://`; hash hex en producción | Respuesta de `/source` |
 
 Subir `ACCOUNT_MIN_AGE_SECONDS` o `HAZARD_CONFIRMATION_THRESHOLD` es la primera palanca si aparece abuso coordinado (ADR-0007, límites aceptados).
+
+## 5.1. Motores y datos (Valhalla y Photon)
+
+Ruteo y búsqueda de direcciones usan dos motores opcionales (perfil `engines` de Compose). Orden para activarlos:
+
+1. **Construir los datos** (ver [`data/README.md`](../data/README.md)): `make data-build`, o los scripts 01 a 05 uno a uno. Photon necesita una fuente explícita (`PHOTON_IMPORT_FILE` o `PHOTON_DUMP_URL` con su sha256).
+2. **Levantar los motores**: `docker compose -f infra/compose.yaml --env-file infra/.env --profile engines up -d --build`. Valhalla (imagen oficial fijada por digest) y Photon (imagen propia, jar verificado por checksum) corren **sin privilegios**, con el sistema de archivos en solo lectura, sin puertos publicados y solo en la red interna. `ENGINES_UID`/`ENGINES_GID` deben ser el usuario que construyó los datos.
+3. **Encender el backend**: `ENGINES_ENABLED=true` en `infra/.env` y reiniciar `backend`. Con el valor apagado ruteo y búsqueda responden `501` y no se llama a ningún motor.
+4. **Verificar**: `python3 scripts/e2e/engines_smoke.py --backend http://127.0.0.1:8080 --psql "…"` (ver su cabecera) comprueba, sobre el entorno de pruebas, ruta con elevación real, rodeo de un cierre confirmado y búsqueda. El workflow `data-smoke.yml` lo hace sobre Mónaco.
+
+Memoria y recursos: Valhalla `mem_limit: 2g` y `VALHALLA_THREADS` (2 por defecto); Photon `mem_limit: 2g` con `PHOTON_JAVA_OPTS` (`-Xmx1g` por defecto; un índice nacional necesita más heap y más límite). Mantén el disco por debajo del 90 %: OpenSearch, que Photon lleva embebido, deja de asignar con el disco casi lleno.
+
+**Actualizar los datos**: repite los pasos 01 a 05 con el mismo extracto para todos (nunca mezcles datos de fechas distintas), reinicia `valhalla` y `photon` y, si el mapa cambió, comprueba que `GET /static/manifest.json` informa el nuevo tamaño y checksum. Cada reconstrucción de Valhalla parte de cero y falla si no puede bajar la elevación, así que un fallo nunca deja un grafo plano ni uno viejo en uso.
+
+**Privacidad**: ni el backend, ni Valhalla ni Photon registran el texto buscado ni las coordenadas de una ruta (lo comprueba `data-smoke.yml`). Si cambias el nivel de log de un motor, vuelve a comprobarlo.
 
 ## 6. Registros (logs)
 

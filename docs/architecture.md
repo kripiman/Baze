@@ -11,7 +11,7 @@ Baze es una aplicación de navegación colaborativa para ciclistas basada en And
 
 ```mermaid
 flowchart TD
-  STORE["Almacenamiento estático<br/>PMTiles + style + sprites + glyphs"] -->|descarga del archivo de la región| APP
+  STORE["Almacenamiento estático<br/>PMTiles + style + manifiesto"] -->|descarga del archivo de la región| APP
   APP["App Android"] -->|HTTPS| CADDY["Caddy (TLS)"]
   CADDY --> API["Backend Rust<br/>monolito modular"]
   API -->|SSE: peligros nuevos del área| APP
@@ -28,7 +28,7 @@ flowchart TD
   PIPE -.->|índice| PH
 ```
 
-> **Estado de implementación**: el backend persiste cuentas, reportes y votos en PostGIS, autentica con tokens que caducan, aplica límites de abuso y publica el contrato OpenAPI. Los clientes de Valhalla (ruteo con evitación de cierres) y de Photon (búsqueda) están implementados y probados contra motores simulados y contra PostGIS real, pero **se activan con `ENGINES_ENABLED=true`**: apagado (el valor por defecto), `POST /api/v1/routing/route` y `GET /api/v1/geocoding/search` responden `501 Not Implemented`. Una ruta falsa con `200` sería un riesgo físico para quien la siga. Las imágenes y los datos de los motores reales aún no están verificados de punta a punta (ver `data/README.md`), por eso el valor por defecto sigue apagado.
+> **Estado de implementación**: el backend persiste cuentas, reportes y votos en PostGIS, autentica con tokens que caducan, aplica límites de abuso y publica el contrato OpenAPI. Los clientes de Valhalla (ruteo con evitación de cierres) y de Photon (búsqueda) están implementados y probados contra motores simulados y contra PostGIS real, pero **se activan con `ENGINES_ENABLED=true`**: apagado (el valor por defecto), `POST /api/v1/routing/route` y `GET /api/v1/geocoding/search` responden `501 Not Implemented`. Una ruta falsa con `200` sería un riesgo físico para quien la siga. Los motores reales, construidos por `data/scripts/` con sus imágenes fijadas por digest, se verifican de punta a punta sobre Mónaco con `data-smoke.yml` (ruta con elevación real, rodeo de un cierre, búsqueda); el valor por defecto sigue apagado porque un despliegue necesita primero sus propios datos (ver `data/README.md` y `docs/operations.md`).
 
 ## 2. Componentes del Sistema
 
@@ -39,7 +39,7 @@ flowchart TD
 | **Base de Datos** | PostgreSQL + PostGIS | Persistencia relacional y espacial: cuentas, reportes, votos comunitarios y consultas de proximidad (`ST_DWithin`, `ST_Intersects`) |
 | **Ruteo** | Valhalla (con soporte de elevación) | Cálculo de rutas ciclistas con penalización de pendientes y evitación dinámica mediante `exclude_polygons` |
 | **Geocodificación** | Photon | Búsqueda y autocompletado de direcciones, consumido exclusivamente como proxy a través del backend |
-| **Mapa Base** | Planetiler → PMTiles (vector tiles), `style.json`, sprites y glifos | Archivos estáticos alojados en almacenamiento HTTP y consumidos offline por la app |
+| **Mapa Base** | Planetiler → PMTiles (vector tiles) y `style.json` (sin sprites ni glifos mientras no haya capas de símbolos) | Archivos estáticos publicados con un manifiesto (tamaño y sha256) que la app verifica, y consumidos offline |
 | **Proxy Reverso** | Caddy | Terminación TLS automática; único servicio expuesto en puertos públicos (80/443) |
 | **Pipeline de Datos** | Scripts batch (Bash, Java/Docker) | Generación coherente de PMTiles, grafo Valhalla e índice Photon a partir de un **mismo extracto OSM** |
 

@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 # ADR 0003: Almacenamiento Estático y Descarga Local de PMTiles
 
 ## Estado
-Aceptado
+Aceptado. El punto 2 se precisó al implementar el pipeline de datos (`data/README.md`): el estilo no declara sprites ni glifos mientras no tenga capas de símbolos, y se publica un manifiesto con el tamaño y el sha256 del mapa.
 
 ## Contexto
 Las aplicaciones de navegación tradicionales consultan servidores de tiles dinámicos o APIs comerciales (Mapbox, Google Maps, Stadia Maps) mediante HTTP por cada tesela visualizada. Esto presenta serias desventajas para ciclistas:
@@ -16,7 +16,7 @@ Las aplicaciones de navegación tradicionales consultan servidores de tiles din�
 
 ## Decisión
 1. Generar los mapas vectoriales usando **Planetiler** en formato archivo único **PMTiles** (`.pmtiles`).
-2. Publicar los archivos `.pmtiles` y los estilos visuales (`style.json`, sprites y glifos) como archivos estáticos servidos por Caddy o almacenamiento de objetos compatible con S3.
+2. Publicar los archivos `.pmtiles` y los estilos visuales (`style.json`; sprites y glifos cuando el estilo tenga capas de símbolos) como archivos estáticos servidos por Caddy o almacenamiento de objetos compatible con S3, junto con un `manifest.json` (tamaño y sha256) para que la app verifique la descarga.
 3. La aplicación móvil ofrece descargar el archivo regional de mapa en el almacenamiento local del dispositivo.
 4. El visor MapLibre Native Android carga el mapa directamente desde el sistema de archivos local utilizando el protocolo `pmtiles://file:///...`.
 

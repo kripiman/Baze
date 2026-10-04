@@ -22,6 +22,11 @@ path = "src/main.rs"
 name = "export-openapi"
 path = "src/bin/export_openapi.rs"
 
+[features]
+# Tests that need a PostgreSQL + PostGIS server reachable through DATABASE_URL (the role must be
+# allowed to create databases: sqlx::test makes one per test). CI provides one; see CONTRIBUTING.md.
+db-tests = []
+
 [dependencies]
 shared.workspace = true
 auth.workspace = true

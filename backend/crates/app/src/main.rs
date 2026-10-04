@@ -14,15 +14,29 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // `baze-server healthcheck` is what the container HEALTHCHECK runs; it must not start a server.
-    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        std::process::exit(if baze_app::healthcheck::probe_local() {
+    match std::env::args().nth(1).as_deref() {
+        // The container HEALTHCHECK; it must not start a server.
+        Some("healthcheck") => std::process::exit(if baze_app::healthcheck::probe_local() {
             0
         } else {
             1
-        });
+        }),
+        // Applies the database migrations with the migration role and exits.
+        Some("migrate") => migrate(),
+        Some(other) => Err(format!(
+            "unknown command '{other}': use `healthcheck`, `migrate`, or no argument to serve"
+        )
+        .into()),
+        None => run(),
     }
-    run()
+}
+
+#[tokio::main]
+async fn migrate() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_env_filter("info").init();
+    let applied = baze_app::db::migrate_from_env().await?;
+    tracing::info!(applied, "Database migrations are up to date");
+    Ok(())
 }
 
 #[tokio::main]

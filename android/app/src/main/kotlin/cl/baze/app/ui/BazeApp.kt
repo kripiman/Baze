@@ -81,7 +81,7 @@ fun BazeApp() {
                     location = Coordinates(longitude = -70.65, latitude = -33.45),
                     onDismiss = { showReportDialog = false },
                     onSubmit = { category, description ->
-                        // TODO(verify): Conectar con ViewModel para invocar BazeApiClient.reportHazard
+                        // TODO(verify): Conectar con ViewModel para invocar BazeApi.reportHazard
                         showReportDialog = false
                     }
                 )

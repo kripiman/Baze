@@ -13,7 +13,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import cl.baze.core.domain.HazardProximityUseCase
 import cl.baze.core.location.LocationProvider
-import cl.baze.core.network.BazeApiClient
+import cl.baze.core.network.BazeApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,7 +33,7 @@ class NavigationService : Service(), KoinComponent {
 
     // Inyección de dependencias mediante Koin
     private val locationProvider: LocationProvider by inject()
-    private val apiClient: BazeApiClient by inject()
+    private val apiClient: BazeApi by inject()
     private val proximityUseCase: HazardProximityUseCase by inject()
 
     companion object {

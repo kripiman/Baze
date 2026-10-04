@@ -35,6 +35,6 @@ fun SearchBar(
             label = { Text("Buscar dirección o destino...") },
             modifier = Modifier.fillMaxWidth()
         )
-        // TODO(verify): Implementar lista desplegable de resultados conectada a BazeApiClient
+        // TODO(verify): Implementar lista desplegable de resultados conectada a BazeApi
     }
 }

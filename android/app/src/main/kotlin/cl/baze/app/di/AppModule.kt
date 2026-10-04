@@ -7,13 +7,14 @@ import cl.baze.core.domain.FilterActiveHazardsUseCase
 import cl.baze.core.domain.HazardProximityUseCase
 import cl.baze.core.location.AndroidLocationManagerProvider
 import cl.baze.core.location.LocationProvider
-import cl.baze.core.network.BazeApiClient
+import cl.baze.core.network.BazeApi
+import cl.baze.core.network.createBazeApi
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
 val appModule = module {
     // Red y cliente API
-    single { BazeApiClient() }
+    single<BazeApi> { createBazeApi() }
 
     // Proveedor de geolocalización 100% libre basado en LocationManager
     single<LocationProvider> { AndroidLocationManagerProvider(androidContext()) }

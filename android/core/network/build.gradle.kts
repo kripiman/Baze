@@ -7,7 +7,9 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":core:model"))
+    // They appear in BazeApi's signatures, so consumers need them on their compile classpath.
+    api(project(":core:model"))
+    api(libs.kotlinx.coroutines.core)
 
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
@@ -15,7 +17,6 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.ktor.client.logging)
 
-    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.datetime)
 

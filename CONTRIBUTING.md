@@ -40,6 +40,7 @@ Para mayor detalle sobre las razones jurídicas y estratégicas de esta decisió
    - Backend con base de datos: `make backend-db-test` (ver abajo).
    - Android: `make android-build`. El CI además ejecuta lint, pruebas, `checkPurity` (los módulos `core` no importan `java.*` ni `android.*`), el ensamblado *release* con R8 y `checkLicenses`.
    - Licencias y avisos de seguridad de dependencias de Rust: `make backend-deny`.
+   - Datos y motores (`data/`, `infra/photon/`, los clientes de `routing` y `geocoding`): `make style-check` y el workflow `data-smoke.yml`, que construye Mónaco con los scripts y prueba Valhalla y Photon reales a través del backend (se lanza solo al tocar esas rutas, o a mano desde la pestaña Actions).
    - Secretos: no incluir archivos `.env`, tokens ni claves privadas.
 4. Abre un Pull Request describiendo el problema resuelto y las decisiones tomadas.
 

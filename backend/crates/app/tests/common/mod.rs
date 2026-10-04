@@ -220,12 +220,28 @@ pub fn test_app_with_accounts(config: AppConfig, accounts: Arc<FakeAccounts>) ->
     build_test_app(config, accounts, geocoder)
 }
 
+/// For tests that publish events themselves (the service is cheap to clone and shares its channel).
+pub fn test_app_with_realtime(config: AppConfig, realtime_service: RealtimeService) -> Router {
+    let accounts = test_accounts(&config);
+    let geocoder =
+        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
+    build_test_app_with_realtime(config, accounts, geocoder, realtime_service)
+}
+
 fn build_test_app(
     config: AppConfig,
     accounts: Arc<FakeAccounts>,
     geocoder: Arc<dyn GeocodingProvider>,
 ) -> Router {
-    let realtime_service = RealtimeService::new(16);
+    build_test_app_with_realtime(config, accounts, geocoder, RealtimeService::new(16))
+}
+
+fn build_test_app_with_realtime(
+    config: AppConfig,
+    accounts: Arc<FakeAccounts>,
+    geocoder: Arc<dyn GeocodingProvider>,
+    realtime_service: RealtimeService,
+) -> Router {
     let hazard_service = Arc::new(FakeHazards::default());
     let state = AppState {
         auth_service: accounts,

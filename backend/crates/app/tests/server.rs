@@ -7,7 +7,9 @@ mod common;
 
 use baze_app::config::AppConfig;
 use baze_app::server::{ServerOptions, serve};
-use common::{test_app_with, test_config};
+use common::{test_app_with, test_app_with_realtime, test_config};
+use realtime::RealtimeService;
+use shared::{GeoJsonPoint, Hazard, HazardCategory, HazardNotifier, HazardStatus};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,7 +26,10 @@ struct Running {
 }
 
 async fn start(config: AppConfig, options: ServerOptions) -> Running {
-    let app = test_app_with(config);
+    start_app(test_app_with(config), options).await
+}
+
+async fn start_app(app: axum::Router, options: ServerOptions) -> Running {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (shutdown, signal) = oneshot::channel::<()>();
@@ -144,6 +149,88 @@ async fn an_event_stream_outlives_the_request_deadline() {
         outcome.is_err(),
         "the stream was closed or sent data: {outcome:?}"
     );
+}
+
+fn pothole_at(lon: f64, lat: f64) -> Hazard {
+    let now = chrono::Utc::now();
+    Hazard {
+        id: uuid::Uuid::new_v4(),
+        category: HazardCategory::Pothole,
+        hazard_type: HazardCategory::Pothole.hazard_type(),
+        status: HazardStatus::Confirmed,
+        description: None,
+        upvotes: 1,
+        downvotes: 0,
+        location: GeoJsonPoint::new(lon, lat),
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(24),
+    }
+}
+
+/// Reads from the stream until `needle` shows up or the deadline passes; returns everything read.
+async fn read_until(stream: &mut TcpStream, needle: &str) -> String {
+    let mut seen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !seen.contains(needle) {
+        assert!(
+            Instant::now() < deadline,
+            "{needle:?} never arrived: {seen}"
+        );
+        let mut chunk = [0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut chunk))
+            .await
+            .expect("read timed out")
+            .expect("read failed");
+        assert!(n > 0, "stream closed before {needle:?}: {seen}");
+        seen.push_str(&String::from_utf8_lossy(&chunk[..n]));
+    }
+    seen
+}
+
+#[tokio::test]
+async fn an_event_stream_delivers_hazards_inside_its_box() {
+    let realtime = RealtimeService::new(16);
+    let server = start_app(
+        test_app_with_realtime(test_config(), realtime.clone()),
+        fast_options(),
+    )
+    .await;
+    let mut stream = TcpStream::connect(server.addr).await.unwrap();
+    stream.write_all(SSE_REQUEST.as_bytes()).await.unwrap();
+    read_head(&mut stream).await;
+
+    realtime.broadcast_hazard(&pothole_at(-70.65, -33.45));
+
+    let received = read_until(&mut stream, "event: hazard").await;
+    assert!(received.contains("\"category\":\"pothole\""), "{received}");
+    assert!(!received.contains("event: resync"), "{received}");
+}
+
+#[tokio::test]
+async fn a_slow_event_stream_client_is_told_to_resync() {
+    // Capacity 2: the test broadcasts without yielding, so the server task cannot drain the channel
+    // in between (the runtime is single-threaded) and the connection is guaranteed to fall behind.
+    let realtime = RealtimeService::new(2);
+    let server = start_app(
+        test_app_with_realtime(test_config(), realtime.clone()),
+        fast_options(),
+    )
+    .await;
+    let mut stream = TcpStream::connect(server.addr).await.unwrap();
+    stream.write_all(SSE_REQUEST.as_bytes()).await.unwrap();
+    read_head(&mut stream).await;
+
+    for i in 0..6 {
+        realtime.broadcast_hazard(&pothole_at(-70.65, -33.45 + f64::from(i) * 0.0005));
+    }
+
+    let received = read_until(&mut stream, "event: resync").await;
+    assert!(received.contains("\"reason\":\"lagged\""), "{received}");
+    // The notice comes first; the reports the channel still held follow it.
+    let resync_at = received.find("event: resync").unwrap();
+    if let Some(hazard_at) = received.find("event: hazard") {
+        assert!(resync_at < hazard_at, "{received}");
+    }
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::stream::{Stream, StreamExt};
-use realtime::RealtimeService;
+use realtime::{RealtimeService, StreamEvent};
 use routing::ValhallaRoutingService;
 use shared::{
     AccountService, AuthResponse, BoundingBox, CreateHazardRequest, GeocodingItem,
@@ -322,7 +322,7 @@ pub async fn geocoding_handler(
     tag = "realtime",
     params(BoundingBox),
     responses(
-        (status = 200, description = "Server-sent events stream of hazards within bounding box", content_type = "text/event-stream"),
+        (status = 200, description = "Server-sent events stream (`text/event-stream`). Event `hazard`: a report created or changed inside the box, with the same JSON as an element of `GET /api/v1/hazards`. Event `resync`: data `{\"reason\":\"lagged\"}`; the connection fell behind and events were dropped, so the client must fetch `GET /api/v1/hazards` for its box again. A `: keep-alive` comment is sent every 15 s and the server ends the stream after 30 minutes; clients reconnect and refetch.", content_type = "text/event-stream"),
         (status = 400, description = "Invalid bbox query", body = ErrorResponse),
         (status = 429, description = "Rate limit or concurrent connection limit exceeded", body = ErrorResponse)
     )
@@ -337,8 +337,13 @@ pub async fn realtime_sse_handler(
 
     let hazard_stream = state.realtime_service.stream_hazards(client_ip.0, bbox)?;
 
-    let event_stream =
-        hazard_stream.map(|hazard| Event::default().event("hazard").json_data(&*hazard));
+    let event_stream = hazard_stream.map(|event| match event {
+        StreamEvent::Hazard(hazard) => Event::default().event("hazard").json_data(&*hazard),
+        // An SSE event without a data line is never dispatched by clients, so the notice carries one.
+        StreamEvent::Resync => Event::default()
+            .event("resync")
+            .json_data(serde_json::json!({ "reason": "lagged" })),
+    });
 
     Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

@@ -9,11 +9,25 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::{self, Receiver, Sender};
-use tokio_stream::{StreamExt as TokioStreamExt, wrappers::BroadcastStream};
+use tokio_stream::{
+    StreamExt as TokioStreamExt,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError},
+};
 
 pub const DEFAULT_MAX_TOTAL_CONNECTIONS: usize = 8192;
 pub const DEFAULT_MAX_CONNECTIONS_PER_KEY: usize = 25;
 pub const DEFAULT_MAX_CONNECTION_DURATION: Duration = Duration::from_secs(1800);
+
+/// What a subscriber receives. Besides the reports inside its box it must be told when it fell so far
+/// behind that the broadcast channel dropped events for it: it cannot know what it missed, so the only
+/// safe answer is to ask it to fetch the current list again.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// A report created or changed inside the subscriber's bounding box.
+    Hazard(Arc<Hazard>),
+    /// Events were dropped for this subscriber; it must re-fetch the hazards of its box.
+    Resync,
+}
 
 struct SseConnectionGuard {
     tracker: Arc<Mutex<SseTracker>>,
@@ -103,11 +117,14 @@ impl RealtimeService {
 
     /// Crea un stream de eventos filtrado por BoundingBox y delimitado por la duración máxima de conexión (30 min).
     /// Adquiere y mantiene el cupo de conexión por red del cliente (/64 en IPv6, /32 en IPv4).
+    ///
+    /// Un suscriptor lento no se queda con huecos en silencio: cuando el canal descarta eventos para él, el
+    /// stream emite [`StreamEvent::Resync`] y sigue con los eventos que aún conserva.
     pub fn stream_hazards(
         &self,
         client_ip: IpAddr,
         bbox: BoundingBox,
-    ) -> Result<impl Stream<Item = Arc<Hazard>> + Send + 'static + use<>, AppError> {
+    ) -> Result<impl Stream<Item = StreamEvent> + Send + 'static + use<>, AppError> {
         let key = shared::client_network(client_ip);
         let guard = self.acquire_connection(key)?;
         let rx = self.subscribe();
@@ -115,8 +132,11 @@ impl RealtimeService {
         let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), move |item| {
             let _keep_guard = &guard;
             match item {
-                Ok(hazard) if bbox.contains_point(&hazard.location) => Some(hazard),
-                _ => None,
+                Ok(hazard) if bbox.contains_point(&hazard.location) => {
+                    Some(StreamEvent::Hazard(hazard))
+                }
+                Ok(_) => None,
+                Err(BroadcastStreamRecvError::Lagged(_)) => Some(StreamEvent::Resync),
             }
         });
 
@@ -223,9 +243,101 @@ mod tests {
 
         service.broadcast_hazard(&fuera);
         service.broadcast_hazard(&dentro);
-        assert_eq!(FuturesStreamExt::next(&mut s2).await.unwrap().id, dentro.id); // filtro por bbox
+        // filtro por bbox
+        match FuturesStreamExt::next(&mut s2).await.unwrap() {
+            StreamEvent::Hazard(hazard) => assert_eq!(hazard.id, dentro.id),
+            StreamEvent::Resync => panic!("nothing was dropped, no resync expected"),
+        }
 
         tokio::time::advance(DEFAULT_MAX_CONNECTION_DURATION + Duration::from_secs(1)).await;
         assert!(FuturesStreamExt::next(&mut s2).await.is_none()); // corte a los 30 min
+    }
+
+    fn hazard_at(lon: f64, lat: f64) -> Hazard {
+        use chrono::Utc;
+        use shared::{GeoJsonPoint, HazardCategory, HazardStatus};
+        use uuid::Uuid;
+
+        Hazard {
+            id: Uuid::new_v4(),
+            category: HazardCategory::Pothole,
+            hazard_type: HazardCategory::Pothole.hazard_type(),
+            status: HazardStatus::Confirmed,
+            description: None,
+            upvotes: 1,
+            downvotes: 0,
+            location: GeoJsonPoint::new(lon, lat),
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::hours(24),
+        }
+    }
+
+    fn santiago_box() -> BoundingBox {
+        BoundingBox {
+            min_lon: -70.7,
+            min_lat: -33.5,
+            max_lon: -70.5,
+            max_lat: -33.3,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_falls_behind_is_told_to_resync() {
+        // Capacity 2 and five reports sent before the subscriber reads anything: three are dropped.
+        let service = RealtimeService::with_limits(2, 10, 10);
+        let ip: IpAddr = "192.168.1.60".parse().unwrap();
+        let mut stream = Box::pin(service.stream_hazards(ip, santiago_box()).unwrap());
+
+        let sent: Vec<Hazard> = (0..5)
+            .map(|i| hazard_at(-70.6, -33.4 + f64::from(i) * 0.001))
+            .collect();
+        for hazard in &sent {
+            service.broadcast_hazard(hazard);
+        }
+
+        assert!(matches!(
+            FuturesStreamExt::next(&mut stream).await,
+            Some(StreamEvent::Resync)
+        ));
+        // After the notice the stream goes on with what the channel still holds: the last two.
+        for expected in &sent[3..] {
+            match FuturesStreamExt::next(&mut stream).await {
+                Some(StreamEvent::Hazard(hazard)) => assert_eq!(hazard.id, expected.id),
+                other => panic!("expected the retained hazard, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_keeps_up_never_sees_a_resync() {
+        let service = RealtimeService::with_limits(2, 10, 10);
+        let ip: IpAddr = "192.168.1.61".parse().unwrap();
+        let mut stream = Box::pin(service.stream_hazards(ip, santiago_box()).unwrap());
+
+        for i in 0..6 {
+            let hazard = hazard_at(-70.6, -33.4 + f64::from(i) * 0.001);
+            service.broadcast_hazard(&hazard);
+            match FuturesStreamExt::next(&mut stream).await {
+                Some(StreamEvent::Hazard(received)) => assert_eq!(received.id, hazard.id),
+                other => panic!("expected the hazard, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_reports_outside_the_box_still_trigger_a_resync() {
+        // The subscriber cannot tell whether what it lost was inside its box, so it must resync anyway.
+        let service = RealtimeService::with_limits(2, 10, 10);
+        let ip: IpAddr = "192.168.1.62".parse().unwrap();
+        let mut stream = Box::pin(service.stream_hazards(ip, santiago_box()).unwrap());
+
+        for i in 0..5 {
+            service.broadcast_hazard(&hazard_at(-71.5, -33.4 + f64::from(i) * 0.001));
+        }
+
+        assert!(matches!(
+            FuturesStreamExt::next(&mut stream).await,
+            Some(StreamEvent::Resync)
+        ));
     }
 }

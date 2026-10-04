@@ -526,7 +526,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Server-sent events stream of hazards within bounding box",
+            "description": "Server-sent events stream (`text/event-stream`). Event `hazard`: a report created or changed inside the box, with the same JSON as an element of `GET /api/v1/hazards`. Event `resync`: data `{\"reason\":\"lagged\"}`; the connection fell behind and events were dropped, so the client must fetch `GET /api/v1/hazards` for its box again. A `: keep-alive` comment is sent every 15 s and the server ends the stream after 30 minutes; clients reconnect and refetch.",
             "content": {
               "text/event-stream": {}
             }

@@ -11,7 +11,7 @@ progress meter: run it with `--through N` to enforce every check up to step N.
     cargo build --manifest-path backend/Cargo.toml -p baze-app
     url="$(bash scripts/e2e/prepare-db.sh postgres://postgres:postgres@127.0.0.1:5432/postgres)"
     python3 scripts/e2e/audit_regression.py --database-url "$url"              # report only
-    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 8  # fail if a step <= 8 regressed
+    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 9  # fail if a step <= 9 regressed
 
 The server needs a real database (accounts live in it): prepare-db.sh builds a disposable one the same way
 the compose stack does, with the low-privilege `baze_app` role the production backend insists on.
@@ -147,6 +147,18 @@ def forge_v1(secret):
 
 def bearer(token):
     return {"Authorization": f"Bearer {token}"}
+
+
+def psql(sql):
+    """Runs SQL as the application role and returns the single value of the last row, if any."""
+    out = subprocess.run(
+        ["psql", DB_URL, "-X", "-v", "ON_ERROR_STOP=1", "-q", "-t", "-A", "-c", sql],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return out.stdout.strip()
 
 
 # ----------------------------------------------------------------------------- checks
@@ -372,6 +384,66 @@ def _(binary):
         tok, _ = forge_v1(STRONG_SECRET)  # the harness knows the real secret: only the token format is under test
         s, _, _ = call(port, "POST", "/api/v1/hazards", {"category": "glass", "location": POINT}, bearer(tok), ip="198.51.100.62")
         return s == 401, f"status={s}"
+
+
+@check("FUN-01", "reports and votes persist across a server restart", 9)
+def _(binary):
+    with server(binary) as (port, _):
+        t1 = signup(port, "203.0.113.11")
+        s, text, _ = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(t1), ip="203.0.113.11")
+        if s != 201:
+            return False, f"create={s}"
+        hid = json.loads(text)["id"]
+        t2 = signup(port, "203.0.114.11")
+        call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(t2), ip="203.0.114.11")
+    # A brand new process over the same database.
+    with server(binary) as (port, _):
+        listing = json.loads(call(port, "GET", "/api/v1/hazards?min_lon=-70.7&min_lat=-33.5&max_lon=-70.6&max_lat=-33.4", ip="203.0.113.12")[1])
+        mine = [h for h in listing if h["id"] == hid]
+        t3 = signup(port, "203.0.114.12")  # same /24 as the second voter: must not count again
+        s, text, _ = call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(t3), ip="203.0.114.77")
+        after = json.loads(text).get("upvotes") if s == 200 else f"http {s}"
+        return bool(mine) and mine[0]["upvotes"] == 2 and after == 2, f"listed={len(mine)} upvotes={mine and mine[0]['upvotes']} after_repeat_network={after}"
+
+
+@check("SEC-05", "a listing never returns more than 500 reports, however many are stored", 9)
+def _(binary):
+    where = "ST_Equals(geom, ST_SetSRID(ST_MakePoint(-60.0, -10.0), 4326))"
+    psql(
+        "WITH a AS (INSERT INTO accounts DEFAULT VALUES RETURNING id) "
+        "INSERT INTO hazards (creator_account_id, category, hazard_type, status, upvotes, downvotes, geom, created_at, expires_at) "
+        "SELECT a.id, 'pothole', 'warning', 'confirmed', 1, 0, ST_SetSRID(ST_MakePoint(-60.0, -10.0), 4326), "
+        "now() - make_interval(secs => g::float8), now() + interval '1 day' FROM a, generate_series(1, 1200) g"
+    )
+    try:
+        with server(binary) as (port, _):
+            s, text, _ = call(port, "GET", "/api/v1/hazards?min_lon=-60.1&min_lat=-10.1&max_lon=-59.9&max_lat=-9.9", ip="203.0.113.13")
+            n = len(json.loads(text)) if s == 200 else -1
+            return s == 200 and n == 500, f"stored=1200 listed={n}"
+    finally:
+        psql(f"DELETE FROM hazards WHERE {where}")
+
+
+@check("FUN-01", "the purge job removes expired reports and their votes", 9)
+def _(binary):
+    psql(
+        "WITH a AS (INSERT INTO accounts DEFAULT VALUES RETURNING id), "
+        "h AS (INSERT INTO hazards (creator_account_id, category, hazard_type, status, upvotes, downvotes, geom, created_at, expires_at) "
+        "SELECT a.id, 'glass', 'warning', 'confirmed', 1, 0, ST_SetSRID(ST_MakePoint(-61.0, -11.0), 4326), "
+        "now() - interval '2 days', now() - interval '1 day' FROM a RETURNING id, creator_account_id) "
+        "INSERT INTO hazard_votes (hazard_id, account_id, vote_type, counts, voter_net) "
+        "SELECT id, creator_account_id, 1, TRUE, decode(repeat('ab', 16), 'hex') FROM h"
+    )
+    left = "SELECT count(*) FROM hazards WHERE ST_Equals(geom, ST_SetSRID(ST_MakePoint(-61.0, -11.0), 4326))"
+    before = psql(left)
+    with server(binary) as (port, _):  # the first purge runs as soon as the server starts
+        for _ in range(100):
+            if psql(left) == "0":
+                break
+            time.sleep(0.1)
+        after = psql(left)
+        orphans = psql("SELECT count(*) FROM hazard_votes v WHERE NOT EXISTS (SELECT 1 FROM hazards h WHERE h.id = v.hazard_id)")
+        return before == "1" and after == "0" and orphans == "0", f"before={before} after={after} orphan_votes={orphans}"
 
 
 @check("SEC-03", "three fresh accounts on three networks cannot confirm a blocking hazard", 10)

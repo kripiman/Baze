@@ -3,16 +3,16 @@
   "name": "Baze Bike Navigation Style",
   "metadata": {
     "maputnik:license": "https://creativecommons.org/publicdomain/zero/1.0/",
-    "baze:purpose": "Optimized vector style for urban bicycle navigation"
+    "baze:purpose": "Optimized vector style for urban bicycle navigation",
+    "baze:note": "{{PMTILES_URL}} is replaced by the app with the local file URL of the downloaded tiles. There are no sprite or glyph URLs on purpose: the style has no symbol layers, and a URL that cannot be reached would break the map offline."
   },
   "sources": {
     "openmaptiles": {
       "type": "vector",
-      "url": "pmtiles://file:///data/user/0/cl.baze.app/files/tiles.pmtiles"
+      "url": "pmtiles://{{PMTILES_URL}}",
+      "attribution": "<a href=\"https://www.openstreetmap.org/copyright\">© OpenStreetMap contributors</a> <a href=\"https://openmaptiles.org/\">© OpenMapTiles</a>"
     }
   },
-  "sprite": "https://localhost/static/styles/sprites/sprite",
-  "glyphs": "https://localhost/static/styles/glyphs/{fontstack}/{range}.pbf",
   "layers": [
     {
       "id": "background",

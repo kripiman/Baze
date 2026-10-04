@@ -12,7 +12,9 @@ on:
       - 'scripts/compose-check.sh'
       - 'scripts/compose_policy.py'
       - 'scripts/gen-env.sh'
+      - 'scripts/check-style.py'
       - 'data/scripts/**'
+      - 'data/styles/**'
       - '.github/workflows/infra.yml'
   pull_request:
     paths:
@@ -22,7 +24,9 @@ on:
       - 'scripts/compose-check.sh'
       - 'scripts/compose_policy.py'
       - 'scripts/gen-env.sh'
+      - 'scripts/check-style.py'
       - 'data/scripts/**'
+      - 'data/styles/**'
       - '.github/workflows/infra.yml'
 
 permissions:
@@ -53,7 +57,10 @@ jobs:
             "${image}" caddy validate --config /etc/caddy/Caddyfile
 
       - name: Lint shell scripts
-        run: shellcheck scripts/*.sh data/scripts/*.sh
+        run: shellcheck scripts/*.sh scripts/e2e/*.sh data/scripts/*.sh data/scripts/container/*.sh
+
+      - name: Check the map style
+        run: python3 scripts/check-style.py
 
   smoke:
     name: Build and run the stack

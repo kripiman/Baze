@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+# Debe coincidir con backend/rust-toolchain.toml y .github/workflows/backend.yml
+# (lo verifica scripts/check-toolchain-sync.sh).
+ARG RUST_VERSION=1.97.1
+
 # Stage 1: Preparación con cargo-chef (versión fijada)
-FROM lukemathwalker/cargo-chef:0.1.71-rust-1.85-bookworm AS chef
+FROM lukemathwalker/cargo-chef:0.1.78-rust-${RUST_VERSION}-bookworm AS chef
 WORKDIR /app
 
 # Stage 2: Generación del recipe de dependencias
@@ -14,24 +18,21 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 # Compilar solo las dependencias externas para maximizar el uso de caché
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 # Compilar el código fuente del proyecto
 COPY . .
-RUN cargo build --release --bin baze-server
+RUN cargo build --release --locked --bin baze-server
 
 # Stage 4: Imagen de ejecución mínima con usuario sin privilegios
 FROM debian:bookworm-slim AS runtime
 
-# Instalar certificados CA para llamadas HTTPS salientes
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+# El binario enlaza solo libc/libm/libgcc_s y no hace llamadas TLS salientes:
+# no hacen falta ni ca-certificates ni libssl.
 
-# Crear usuario y grupo no root
+# Crear usuario y grupo no root, sin shell de login ni directorio home
 RUN groupadd -g 10001 baze && \
-    useradd -u 10001 -g baze -s /bin/sh -m baze
+    useradd -u 10001 -g baze -s /usr/sbin/nologin -M baze
 
 WORKDIR /app
 

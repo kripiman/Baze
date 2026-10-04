@@ -4,5 +4,5 @@
 # Keep in sync with the Dockerfile and .github/workflows/backend.yml
 # (verified by scripts/check-toolchain-sync.sh).
 [toolchain]
-channel = "1.97.0"
+channel = "1.97.1"
 components = ["rustfmt", "clippy"]

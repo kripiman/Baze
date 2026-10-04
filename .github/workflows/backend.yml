@@ -7,19 +7,26 @@ on:
   push:
     paths:
       - 'backend/**'
+      - 'scripts/check-toolchain-sync.sh'
       - '.github/workflows/backend.yml'
   pull_request:
     paths:
       - 'backend/**'
+      - 'scripts/check-toolchain-sync.sh'
       - '.github/workflows/backend.yml'
 
 permissions:
   contents: read
 
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Format, Clippy, Test & Licenses
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -27,10 +34,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Check toolchain pins are consistent
+        working-directory: .
+        run: bash scripts/check-toolchain-sync.sh
+
+      # Keep this version in sync with backend/rust-toolchain.toml and backend/Dockerfile.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: 1.85.0 # TODO(verify): Actualizar cuando toolchain 2024 edition finalice estabilización
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Rust Cache
@@ -42,15 +54,42 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Run Unit & Integration Tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace --all-features
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20.2
 
+      # Advisories are checked by .github/workflows/security.yml (weekly and on demand) so that
+      # a newly published advisory cannot block unrelated pull requests.
       - name: Run cargo-deny checks
-        run: cargo deny check
+        run: cargo deny check bans licenses sources
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: 1.88.0
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c # v2.7.7
+        with:
+          workspaces: backend
+
+      # The explicit +1.88.0 overrides backend/rust-toolchain.toml.
+      - name: Check that the workspace builds on the minimum supported Rust version
+        run: cargo +1.88.0 check --locked --workspace --all-targets

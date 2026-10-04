@@ -79,6 +79,8 @@ services:
       - PORT=${PORT:-8080}
       - HOST=${HOST:-0.0.0.0}
       - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL explicitly in .env}
+      # Apagado = ruteo y búsqueda responden 501 (no hay motores a quienes preguntar).
+      - ENGINES_ENABLED=${ENGINES_ENABLED:-false}
       - VALHALLA_URL=${VALHALLA_URL:-http://valhalla:8002}
       - PHOTON_URL=${PHOTON_URL:-http://photon:2322}
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET explicitly in .env}

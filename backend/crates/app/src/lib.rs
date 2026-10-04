@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod db;
+pub mod disabled;
 pub mod healthcheck;
 pub mod http;
 pub mod openapi;

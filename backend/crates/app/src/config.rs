@@ -37,6 +37,9 @@ pub struct AppConfig {
     pub database_url: String,
     pub valhalla_url: String,
     pub photon_url: String,
+    /// Whether routing and address search call Valhalla and Photon. Off, both answer 501: there is no
+    /// engine to ask, and saying so is better than failing every request against a missing service.
+    pub engines_enabled: bool,
     pub jwt_secret: String,
     /// During a secret rotation: the secret tokens were signed with before. Verifies only.
     pub jwt_secret_previous: Option<String>,
@@ -271,6 +274,7 @@ impl AppConfig {
             .unwrap_or_else(|| "http://localhost:2322".to_string());
         validate_internal_http_url("VALHALLA_URL", &valhalla_url)?;
         validate_internal_http_url("PHOTON_URL", &photon_url)?;
+        let engines_enabled = parse_lookup_var(&lookup, "ENGINES_ENABLED", false)?;
 
         let rate_limit_rpm = parse_lookup_var(&lookup, "RATE_LIMIT_REQUESTS_PER_MINUTE", 60u64)?;
         if !(1..=10_000).contains(&rate_limit_rpm) {
@@ -356,6 +360,7 @@ impl AppConfig {
             database_url,
             valhalla_url,
             photon_url,
+            engines_enabled,
             jwt_secret,
             jwt_secret_previous,
             auth_token_ttl_days,
@@ -804,6 +809,21 @@ mod tests {
         assert!(on.enable_api_docs);
         let err = AppConfig::from_lookup(prod_vars(&[("ENABLE_API_DOCS", "maybe")])).unwrap_err();
         assert!(err.contains("ENABLE_API_DOCS"), "{err}");
+    }
+
+    #[test]
+    fn the_engines_are_off_until_they_are_switched_on() {
+        assert!(
+            !AppConfig::from_lookup(prod_vars(&[]))
+                .unwrap()
+                .engines_enabled
+        );
+        let dev = AppConfig::from_lookup(mock_env(&[("ENVIRONMENT", "development")])).unwrap();
+        assert!(!dev.engines_enabled);
+        let on = AppConfig::from_lookup(prod_vars(&[("ENGINES_ENABLED", "true")])).unwrap();
+        assert!(on.engines_enabled);
+        let err = AppConfig::from_lookup(prod_vars(&[("ENGINES_ENABLED", "yes")])).unwrap_err();
+        assert!(err.contains("ENGINES_ENABLED"), "{err}");
     }
 
     #[test]

@@ -15,11 +15,11 @@ use axum::{
 };
 use futures_util::stream::{Stream, StreamExt};
 use realtime::{RealtimeService, StreamEvent};
-use routing::ValhallaRoutingService;
 use shared::{
     AccountService, AuthResponse, BoundingBox, CreateHazardRequest, GeocodingItem,
     GeocodingProvider, GeocodingQuery, Hazard, HazardStore, HazardVoteRequest,
     MAX_LIST_BBOX_SPAN_DEGREES, MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest, RouteResponse,
+    RoutingProvider,
 };
 use std::{sync::Arc, time::Duration};
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -36,7 +36,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub auth_service: Arc<dyn AccountService>,
     pub hazard_service: Arc<dyn HazardStore>,
-    pub routing_service: ValhallaRoutingService,
+    pub routing_service: Arc<dyn RoutingProvider>,
     pub geocoding_service: Arc<dyn GeocodingProvider>,
     pub realtime_service: RealtimeService,
     pub rate_limiter: RateLimiter,
@@ -273,13 +273,15 @@ pub async fn vote_hazard_handler(
     tag = "routing",
     request_body = RouteRequest,
     responses(
-        (status = 200, description = "Calculated bicycle route", body = RouteResponse),
-        (status = 400, description = "Invalid coordinates", body = ErrorResponse),
+        (status = 200, description = "Calculated bicycle route. It never crosses a confirmed road closure: when the base route would, the engine is asked again with the closure excluded.", body = RouteResponse),
+        (status = 400, description = "Invalid coordinates, or origin and destination more than 150 km apart", body = ErrorResponse),
+        (status = 404, description = "No bicycle route exists between the points, or none avoids the confirmed closures", body = ErrorResponse),
         (status = 413, description = "Request body too large", body = ErrorResponse),
         (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
-        (status = 501, description = "Routing is not available yet", body = ErrorResponse),
-        (status = 502, description = "Routing engine failed", body = ErrorResponse)
+        (status = 501, description = "Routing is not enabled on this server (ENGINES_ENABLED is off)", body = ErrorResponse),
+        (status = 502, description = "Routing engine failed", body = ErrorResponse),
+        (status = 503, description = "A route clear of the confirmed closures cannot be established right now (too many closures along it); retry later", body = ErrorResponse)
     )
 )]
 pub async fn route_handler(
@@ -300,7 +302,7 @@ pub async fn route_handler(
         (status = 200, description = "Geocoding suggestions", body = Vec<GeocodingItem>),
         (status = 400, description = "Missing or invalid query parameter", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
-        (status = 501, description = "Address search is not available yet", body = ErrorResponse),
+        (status = 501, description = "Address search is not enabled on this server (ENGINES_ENABLED is off)", body = ErrorResponse),
         (status = 502, description = "Geocoding engine failed", body = ErrorResponse)
     )
 )]

@@ -6,6 +6,8 @@
 //! in-memory fakes. The real stores are covered by the `db-tests` of their own crates.
 #![allow(dead_code)]
 
+pub mod valhalla;
+
 use async_trait::async_trait;
 use auth::token::{self, TokenKeys};
 use axum::{
@@ -14,18 +16,17 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use baze_app::config::AppConfig;
+use baze_app::disabled::EnginesDisabled;
 use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
 use chrono::{DateTime, Duration, Utc};
-use geocoding::PhotonGeocodingService;
 use http_body_util::BodyExt;
 use realtime::RealtimeService;
-use routing::ValhallaRoutingService;
 use serde_json::{Value, json};
 use shared::{
     AccountContext, AccountService, AppError, AuthResponse, BoundingBox, CorridorHazards,
     CreateHazardRequest, GeoJsonLineString, GeoJsonPolygon, GeocodingProvider, Hazard,
-    HazardStatus, HazardStore, Vote,
+    HazardStatus, HazardStore, RoutingProvider, Vote,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -201,9 +202,8 @@ pub fn test_app() -> Router {
 }
 
 pub fn test_app_with(config: AppConfig) -> Router {
-    let geocoder =
-        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
-    test_app_with_geocoder(config, geocoder)
+    let accounts = test_accounts(&config);
+    build_test_app(config, accounts, Arc::new(EnginesDisabled))
 }
 
 /// The geocoder is the one collaborator that is trivial to replace, which makes it the handle for
@@ -215,17 +215,37 @@ pub fn test_app_with_geocoder(config: AppConfig, geocoder: Arc<dyn GeocodingProv
 
 /// For tests that need to create accounts of a given age or deactivate them.
 pub fn test_app_with_accounts(config: AppConfig, accounts: Arc<FakeAccounts>) -> Router {
-    let geocoder =
-        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
-    build_test_app(config, accounts, geocoder)
+    build_test_app(config, accounts, Arc::new(EnginesDisabled))
 }
 
 /// For tests that publish events themselves (the service is cheap to clone and shares its channel).
 pub fn test_app_with_realtime(config: AppConfig, realtime_service: RealtimeService) -> Router {
     let accounts = test_accounts(&config);
-    let geocoder =
-        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
-    build_test_app_with_realtime(config, accounts, geocoder, realtime_service)
+    test_app_with_services(
+        config,
+        accounts,
+        Arc::new(FakeHazards::default()),
+        Arc::new(EnginesDisabled),
+        Arc::new(EnginesDisabled),
+        realtime_service,
+    )
+}
+
+/// For tests that bring their own routing and search engines.
+pub fn test_app_with_engines(
+    config: AppConfig,
+    routing: Arc<dyn RoutingProvider>,
+    geocoder: Arc<dyn GeocodingProvider>,
+) -> Router {
+    let accounts = test_accounts(&config);
+    test_app_with_services(
+        config,
+        accounts,
+        Arc::new(FakeHazards::default()),
+        routing,
+        geocoder,
+        RealtimeService::new(16),
+    )
 }
 
 fn build_test_app(
@@ -233,23 +253,28 @@ fn build_test_app(
     accounts: Arc<FakeAccounts>,
     geocoder: Arc<dyn GeocodingProvider>,
 ) -> Router {
-    build_test_app_with_realtime(config, accounts, geocoder, RealtimeService::new(16))
+    test_app_with_services(
+        config,
+        accounts,
+        Arc::new(FakeHazards::default()),
+        Arc::new(EnginesDisabled),
+        geocoder,
+        RealtimeService::new(16),
+    )
 }
 
-fn build_test_app_with_realtime(
+/// Everything injectable: the most general way to put the router together for a test.
+pub fn test_app_with_services(
     config: AppConfig,
     accounts: Arc<FakeAccounts>,
+    hazard_service: Arc<dyn HazardStore>,
+    routing_service: Arc<dyn RoutingProvider>,
     geocoder: Arc<dyn GeocodingProvider>,
     realtime_service: RealtimeService,
 ) -> Router {
-    let hazard_service = Arc::new(FakeHazards::default());
     let state = AppState {
         auth_service: accounts,
-        routing_service: ValhallaRoutingService::new(
-            config.valhalla_url.clone(),
-            hazard_service.clone(),
-        )
-        .expect("routing client"),
+        routing_service,
         geocoding_service: geocoder,
         rate_limiter: RateLimiter::new(),
         hazard_service,

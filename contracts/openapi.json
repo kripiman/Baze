@@ -117,7 +117,7 @@
             }
           },
           "501": {
-            "description": "Address search is not available yet",
+            "description": "Address search is not enabled on this server (ENGINES_ENABLED is off)",
             "content": {
               "application/json": {
                 "schema": {
@@ -572,7 +572,7 @@
         },
         "responses": {
           "200": {
-            "description": "Calculated bicycle route",
+            "description": "Calculated bicycle route. It never crosses a confirmed road closure: when the base route would, the engine is asked again with the closure excluded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -582,7 +582,17 @@
             }
           },
           "400": {
-            "description": "Invalid coordinates",
+            "description": "Invalid coordinates, or origin and destination more than 150 km apart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No bicycle route exists between the points, or none avoids the confirmed closures",
             "content": {
               "application/json": {
                 "schema": {
@@ -622,7 +632,7 @@
             }
           },
           "501": {
-            "description": "Routing is not available yet",
+            "description": "Routing is not enabled on this server (ENGINES_ENABLED is off)",
             "content": {
               "application/json": {
                 "schema": {
@@ -633,6 +643,16 @@
           },
           "502": {
             "description": "Routing engine failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A route clear of the confirmed closures cannot be established right now (too many closures along it); retry later",
             "content": {
               "application/json": {
                 "schema": {

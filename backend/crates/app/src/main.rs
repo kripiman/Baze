@@ -4,6 +4,7 @@
 use auth::AuthService;
 use auth::token::TokenKeys;
 use baze_app::config::AppConfig;
+use baze_app::disabled::EnginesDisabled;
 use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
 use baze_app::server::{ServerOptions, serve, shutdown_signal};
@@ -11,6 +12,7 @@ use geocoding::PhotonGeocodingService;
 use hazards::{HazardPolicy, HazardService};
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
+use shared::{GeocodingProvider, RoutingProvider};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,11 +108,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Wiring arquitectónico: Routing comparte la misma instancia Arc<HazardService> que implementa CorridorHazards
-    let routing_service =
-        ValhallaRoutingService::new(config.valhalla_url.clone(), hazard_service.clone())?;
-
-    let geocoding_service = Arc::new(PhotonGeocodingService::new(config.photon_url.clone())?);
+    // Wiring arquitectónico: Routing comparte la misma instancia Arc<HazardService> que implementa CorridorHazards.
+    // Sin motores (ENGINES_ENABLED apagado) ruteo y búsqueda responden 501 en lugar de inventar resultados.
+    let (routing_service, geocoding_service): (
+        Arc<dyn RoutingProvider>,
+        Arc<dyn GeocodingProvider>,
+    ) = if config.engines_enabled {
+        (
+            Arc::new(ValhallaRoutingService::new(
+                config.valhalla_url.clone(),
+                hazard_service.clone(),
+            )?),
+            Arc::new(PhotonGeocodingService::new(config.photon_url.clone())?),
+        )
+    } else {
+        tracing::info!("ENGINES_ENABLED is off: routing and address search answer 501");
+        (Arc::new(EnginesDisabled), Arc::new(EnginesDisabled))
+    };
     let rate_limiter = RateLimiter::new();
 
     let app_state = Arc::new(AppState {

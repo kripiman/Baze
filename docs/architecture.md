@@ -28,6 +28,8 @@ flowchart TD
   PIPE -.->|índice| PH
 ```
 
+> **Estado de implementación**: el backend ya persiste cuentas, reportes y votos en PostGIS, autentica con tokens que caducan, aplica límites de abuso y publica el contrato OpenAPI. El ruteo (`POST /api/v1/routing/route`) y la geocodificación (`GET /api/v1/geocoding/search`) responden `501 Not Implemented` hasta conectar Valhalla y Photon: una ruta falsa con `200` sería un riesgo físico para quien la siga. Las consultas espaciales que alimentarán ese ruteo ya existen y están probadas contra PostGIS (sección 3.3).
+
 ## 2. Componentes del Sistema
 
 | Componente | Tecnología | Rol Principal |
@@ -51,26 +53,30 @@ flowchart TD
   - **Ruteo**: **No altera la ruta calculada**.
 - **Bloqueo (`blocking`)**: Ejemplos: calle cortada, obra vial sin paso ciclista, inundación total.
   - **Efecto**: Afecta el motor de ruteo **únicamente cuando está confirmado**.
-  - **Criterio de Confirmación**: Requiere alcanzar un umbral neto de votos positivos (`upvotes - downvotes >= THRESHOLD`), configurable vía variables de entorno. Los reportes no confirmados permanecen en estado tentativo y solo generan alertas de advertencia preventiva.
+  - **Criterio de Confirmación**: Requiere alcanzar un umbral neto de votos positivos (`upvotes - downvotes >= THRESHOLD`), configurable vía variables de entorno (2 a 50). Los reportes no confirmados permanecen en estado tentativo y solo generan alertas de advertencia preventiva.
+- **Tipo derivado**: el servidor deduce el tipo de la categoría (`glass`, `pothole`, `debris` son `warning`; `road_closed`, `construction`, `flood` son `blocking`); el cliente no lo elige.
+- **Retirada por la comunidad**: cuando `downvotes - upvotes >= THRESHOLD` el reporte, sea aviso o bloqueo, pasa a `resolved`. Es terminal: sale de los listados y ya no admite votos.
 
 ### 3.2. Ciclo de Vida y Expiración sin TTL
 PostgreSQL no dispone de soporte nativo de TTL (Time-To-Live) por fila:
-- Cada reporte almacena un campo `expires_at` (determinado por el tipo de peligro y votos acumulados).
-- Todas las consultas activas (tanto de la API como de cruces espaciales de ruteo) filtran obligatoriamente con `WHERE expires_at > NOW()`.
-- Un job periódico en segundo plano en el backend elimina físicamente los registros caducados de la base de datos para controlar el tamaño de las tablas e índices espaciales GiST.
+- Cada reporte almacena un campo `expires_at` (`HAZARD_DEFAULT_TTL_HOURS` después de su creación, 24 horas por defecto).
+- Todas las consultas activas (tanto de la API como de cruces espaciales de ruteo) filtran obligatoriamente con `WHERE expires_at > NOW()` y excluyen los `resolved`.
+- Un job periódico en segundo plano (cada cinco minutos y al arrancar) elimina físicamente, en lotes de 1000, los reportes caducados hace más de 24 horas; sus votos caen en cascada. Esas 24 horas de gracia son la ventana de los topes diarios por cuenta (ADR-0007). El job solo recupera espacio: las lecturas ya ignoran los caducados.
 
 ### 3.3. Algoritmo de Re-ruteo con `exclude_polygons`
 Para evitar enviar todos los reportes de una ciudad al motor de ruteo:
 1. El backend recibe origen y destino y solicita a Valhalla la ruta ciclista base (`costing: bicycle`).
-2. El backend extrae la geometría de la ruta (LineString) y ejecuta una consulta espacial en PostGIS buscando intersecciones con bloqueos confirmados vigentes:
+2. El backend extrae la geometría de la ruta (LineString) y ejecuta una consulta espacial en PostGIS (`CorridorHazards`) buscando bloqueos confirmados vigentes cerca de ella. El índice GiST sobre `geom::geography` sirve a `ST_DWithin`, y cada bloqueo se devuelve como un polígono de exclusión (círculo de 30 m):
    ```sql
-   SELECT ST_AsGeoJSON(geom)
+   SELECT ST_AsGeoJSON(ST_Buffer(geom::geography, 30, 4)::geometry)
    FROM hazards
    WHERE hazard_type = 'blocking'
      AND status = 'confirmed'
-     AND expires_at > NOW()
-     AND ST_Intersects(geom, ST_Buffer(ST_GeomFromGeoJSON($1)::geography, 15)::geometry);
+     AND expires_at > now()
+     AND ST_DWithin(geom::geography, ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, $2)
+   ORDER BY created_at DESC LIMIT 501;
    ```
+   Si hay más de 500 bloqueos en el corredor la consulta falla en lugar de truncar: una ruta que ignora un cierre que nunca se le comunicó es peor que ninguna ruta.
 3. Si **no hay cruce**, se retorna de inmediato la ruta original.
 4. Si **hay cruce**, se construyen polígonos delimitadores (buffers) alrededor de los bloqueos intersecados y se repite la petición a Valhalla agregando el parámetro `exclude_polygons`. Valhalla impone límites en la cantidad y tamaño de estos polígonos, garantizando que solo se envíen los obstáculos que efectivamente impactan la trayectoria.
 
@@ -81,12 +87,20 @@ Para evitar enviar todos los reportes de una ciudad al motor de ruteo:
 - El servidor **no conoce ni almacena la posición GPS en vivo del usuario**, preservando la privacidad integral.
 
 ### 3.5. Modelo de Identidad y Mitigación de Abuso
-- **Cuentas Anónimas**: Al abrir la app por primera vez, el cliente invoca `POST /api/v1/auth/anonymous`. El backend genera un identificador anónimo firmado (JWT o token opaco en base de datos).
-- **Votación Única**: Se impone una restricción única `UNIQUE(hazard_id, account_id)` en la tabla de votos. Una cuenta solo puede emitir un voto (+1 o -1) por reporte.
-- **Rate Limiting**: Rate limiting en el backend (aplicado mediante middleware de tower / governor) por cuenta de usuario y por IP para evitar spam o creación masiva de reportes falsos.
+Detalle y justificación en [ADR-0007](adr/0007-identity-voting-and-abuse-limits.md) y [ADR-0008](adr/0008-database-roles-migrations-and-vote-networks.md).
+- **Cuentas Anónimas**: Al abrir la app por primera vez, el cliente invoca `POST /api/v1/auth/anonymous`. El backend inserta una fila en `accounts` y devuelve un token `baze_v2.…` firmado con HMAC-SHA-256 que caduca (`AUTH_TOKEN_TTL_DAYS`). Cada petición autenticada verifica la firma y consulta la fila (`is_active`), de modo que banear una cuenta surte efecto de inmediato.
+- **Votación Única**: Restricción `UNIQUE(hazard_id, account_id)` en la tabla de votos: una cuenta, un voto (+1 o -1) por reporte, que puede cambiar. El voto del creador es su primer voto.
+- **Consenso por red**: solo el primer voto de cada subred (`/24` IPv4, `/64` IPv6) cuenta para el umbral. La red se guarda como una etiqueta HMAC con clave, nunca como dirección IP. Los votos de un mismo reporte se serializan con un bloqueo de fila.
+- **Cuentas nuevas**: no pueden votar ni reportar bloqueos hasta cumplir `ACCOUNT_MIN_AGE_SECONDS` (600 s); cada cuenta tiene topes diarios de reportes y votos.
+- **Rate Limiting**: middleware propio con memoria acotada, por red de cliente (la IP real, nunca una cabecera arbitraria) y por cuenta autenticada; toda respuesta 429 lleva `Retry-After`.
 
 ### 3.6. Mapas Vectoriales Autónomos y Modo Offline
 - Las fuentes remotas tradicionales de PMTiles no proveen caché offline confiable en clientes móviles nativos.
 - La aplicación Baze descarga el archivo `.pmtiles` de la región de interés al almacenamiento local del dispositivo.
 - MapLibre Native Android lee directamente el archivo mediante la URL local `pmtiles://file:///...`.
 - El mapa base permanece 100% operativo sin conectividad a Internet.
+
+### 3.7. Persistencia, Roles y Migraciones
+- Toda la información vive en PostgreSQL/PostGIS; el proceso del backend no guarda estado. Reiniciarlo no pierde reportes ni votos, y varias instancias podrían compartir la base de datos (el SSE sigue siendo en memoria por instancia, ver ADR-0001).
+- El backend se conecta con `baze_app`, un rol que solo lee y escribe filas (ADR-0008). Las migraciones las aplica el servicio `migrate` con el rol dueño del esquema antes de que arranque el backend, que además verifica la versión del esquema al iniciar.
+- Las consultas se escriben con `sqlx::query` en tiempo de ejecución; las pruebas con base de datos (`make backend-db-test`, y el CI con un servicio PostGIS) son lo que las valida.

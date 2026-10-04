@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+blank_issues_enabled: false
+contact_links:
+  - name: Reportar una vulnerabilidad de seguridad
+    url: https://github.com/kripiman/Baze/security/policy
+    about: No abras un issue público. Sigue el proceso privado descrito en SECURITY.md.

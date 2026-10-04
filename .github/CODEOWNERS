@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Quién revisa qué. Con la protección de rama "Require review from Code Owners", cualquiera de los
+# propietarios listados en una línea basta para aprobar los cambios de esas rutas.
+
+*                       @kripiman @gabrielpinones
+
+# Superficie sensible: autenticación, votación, infraestructura, base de datos y CI.
+/backend/migrations/    @kripiman @gabrielpinones
+/infra/                 @kripiman @gabrielpinones
+/.github/               @kripiman @gabrielpinones
+/SECURITY.md            @kripiman @gabrielpinones

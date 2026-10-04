@@ -26,6 +26,10 @@ keystore.properties
 data/out/
 graphify-out/
 
+# Python (scripts de apoyo)
+__pycache__/
+*.pyc
+
 # Secretos
 .env
 .env.*

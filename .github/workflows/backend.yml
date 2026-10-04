@@ -90,7 +90,7 @@ jobs:
         run: |
           (cd backend && cargo build --locked -p baze-app --bin baze-server)
           url="$(bash scripts/e2e/prepare-db.sh "$DATABASE_URL" baze_e2e)"
-          python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through 10
+          python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through 11
 
       - name: Check the OpenAPI contract is up to date
         run: cargo run --locked -p baze-app --bin export-openapi -- --check

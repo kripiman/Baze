@@ -11,12 +11,16 @@ progress meter: run it with `--through N` to enforce every check up to step N.
     cargo build --manifest-path backend/Cargo.toml -p baze-app
     url="$(bash scripts/e2e/prepare-db.sh postgres://postgres:postgres@127.0.0.1:5432/postgres)"
     python3 scripts/e2e/audit_regression.py --database-url "$url"              # report only
-    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 10  # fail if a step <= 10 regressed
+    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 11  # fail if a step <= 11 regressed
 
 The server needs a real database (accounts live in it): prepare-db.sh builds a disposable one the same way
 the compose stack does, with the low-privilege `baze_app` role the production backend insists on.
 
 Standard library only.
+
+The routing and search checks run the binary against stand-ins for Valhalla and Photon that live in this file
+(plain `http.server`): the point is to prove the wiring and the closure-avoidance rule through the real binary
+and PostGIS, not to test the engines (the `data-smoke` workflow does that with the real ones).
 """
 
 import argparse
@@ -30,9 +34,12 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlsplit
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DEFAULT_BINARY = os.path.join(REPO, "backend", "target", "debug", "baze-server")
@@ -178,6 +185,121 @@ def aged_account(minutes=1440):
     return mint_v2(STRONG_SECRET, account_id)
 
 
+def insert_hazard(category, status, lon, lat):
+    """Stores a report of a new account directly, with the given status, and returns its id."""
+    hazard_type = "blocking" if category in ("road_closed", "construction", "flood") else "warning"
+    return psql(
+        "WITH a AS (INSERT INTO accounts DEFAULT VALUES RETURNING id) "
+        "INSERT INTO hazards (creator_account_id, category, hazard_type, status, geom, expires_at) "
+        f"SELECT a.id, '{category}', '{hazard_type}', '{status}', ST_SetSRID(ST_MakePoint({lon}, {lat}), 4326), "
+        "now() + interval '24 hours' FROM a RETURNING id"
+    ).splitlines()[0]
+
+
+def delete_hazards(ids):
+    for hazard_id in ids:
+        psql(f"DELETE FROM hazards WHERE id = '{hazard_id}'")
+
+
+def encode_polyline6(points):
+    """Google polyline encoding with six digits, which is what Valhalla answers (`points` are (lon, lat))."""
+    out, previous_lat, previous_lon = [], 0, 0
+    for lon, lat in points:
+        lat_i, lon_i = round(lat * 1e6), round(lon * 1e6)
+        for delta in (lat_i - previous_lat, lon_i - previous_lon):
+            value = ~(delta << 1) if delta < 0 else delta << 1
+            while value >= 0x20:
+                out.append(chr((0x20 | (value & 0x1F)) + 63))
+                value >>= 5
+            out.append(chr(value + 63))
+        previous_lat, previous_lon = lat_i, lon_i
+    return "".join(out)
+
+
+def interpolate(a, b, steps):
+    return [(a[0] + (b[0] - a[0]) * i / steps, a[1] + (b[1] - a[1]) * i / steps) for i in range(steps + 1)]
+
+
+class ToyServer:
+    """A loopback HTTP server whose handler is a function (method, path+query, body) -> (status, json-able)."""
+
+    def __init__(self, handler):
+        self.requests = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _serve(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                outer.requests.append((self.command, self.path, body))
+                status, payload = handler(self.command, self.path, body)
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_GET = do_POST = _serve
+
+            def log_message(self, *args):  # keep the report readable
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self._server.shutdown()
+        self._server.server_close()
+
+    def json_bodies(self):
+        return [json.loads(body) for _, _, body in self.requests if body]
+
+
+def toy_valhalla(honour_exclusions=True):
+    """Valhalla's /route as far as the backend uses it: the direct road, or a detour when told to avoid something."""
+
+    def handler(method, path, body):
+        request = json.loads(body)
+        a, b = request["locations"]
+        origin, destination = (a["lon"], a["lat"]), (b["lon"], b["lat"])
+        if honour_exclusions and request.get("exclude_polygons"):
+            apex = ((origin[0] + destination[0]) / 2, (origin[1] + destination[1]) / 2 + 0.01)
+            points = interpolate(origin, apex, 100) + interpolate(apex, destination, 100)[1:]
+        else:
+            points = interpolate(origin, destination, 200)
+        return 200, {
+            "trip": {
+                "status": 0,
+                "units": "kilometers",
+                "summary": {"length": 9.5, "time": 1900.0},
+                "legs": [
+                    {
+                        "shape": encode_polyline6(points),
+                        "elevation": [100.0, 120.0, 110.0],
+                        "maneuvers": [
+                            {"instruction": "Head east.", "time": 1800.0, "length": 9.4, "begin_shape_index": 0},
+                            {"instruction": "You have arrived.", "time": 0.0, "length": 0.0, "begin_shape_index": len(points) - 1},
+                        ],
+                    }
+                ],
+            }
+        }
+
+    return ToyServer(handler)
+
+
+def toy_photon():
+    """Photon's /api with a single, fixed answer."""
+    feature = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [-70.6506, -33.4378]},
+        "properties": {"name": "Plaza de Armas", "city": "Santiago", "country": "Chile"},
+    }
+    return ToyServer(lambda method, path, body: (200, {"type": "FeatureCollection", "features": [feature]}))
+
+
 # ----------------------------------------------------------------------------- checks
 CHECKS = []
 
@@ -223,7 +345,7 @@ def _(binary):
     return code not in (None, 0) and "excess privileges" in output, f"exit={code}"
 
 
-@check("FUN-01", "routing and geocoding answer 501 instead of fake data", 3)
+@check("FUN-01", "routing and geocoding answer 501 instead of fake data while the engines are off", 3)
 def _(binary):
     with server(binary) as (port, _):
         s1, _, _ = call(
@@ -505,6 +627,87 @@ def _(binary):
             for i in range(3)
         ]
         return codes == [201, 201, 429], f"codes={codes}"
+
+
+ROUTE_FROM = (-71.65, -33.03)
+ROUTE_TO = (-71.55, -33.03)
+ROUTE_MIDDLE = (-71.60, -33.03)
+
+
+def route_body():
+    point = lambda c: {"type": "Point", "coordinates": list(c)}
+    return {"origin": point(ROUTE_FROM), "destination": point(ROUTE_TO)}
+
+
+@check("FUN-01", "a confirmed closure is avoided end to end (binary, PostGIS, engine stand-in); an unconfirmed one is not", 11)
+def _(binary):
+    ids, engine = [], toy_valhalla()
+    try:
+        ids.append(insert_hazard("road_closed", "confirmed", *ROUTE_MIDDLE))
+        ids.append(insert_hazard("road_closed", "unconfirmed", -71.63, -33.03))
+        with server(binary, ENGINES_ENABLED="true", VALHALLA_URL=engine.url) as (port, _):
+            status, text, _ = call(port, "POST", "/api/v1/routing/route", route_body(), ip="198.51.100.40")
+        sent = engine.json_bodies()
+        if status != 200:
+            return False, f"status={status} {text[:120]}"
+        body = json.loads(text)
+        apex = max(lat for _, lat in body["geometry"]["coordinates"])
+        ok = (
+            len(sent) == 2
+            and "exclude_polygons" not in sent[0]
+            and len(sent[1].get("exclude_polygons", [])) == 1
+            and apex > ROUTE_FROM[1] + 0.009
+            and body["ascent_meters"] == 20.0
+        )
+        return ok, f"engine calls={len(sent)} excluded={len(sent[-1].get('exclude_polygons', []))} apex={apex:.4f}"
+    finally:
+        engine.close()
+        delete_hazards(ids)
+
+
+@check("FUN-01", "a route is never served through a closure the engine could not avoid", 11)
+def _(binary):
+    ids, engine = [], toy_valhalla(honour_exclusions=False)
+    try:
+        ids.append(insert_hazard("road_closed", "confirmed", *ROUTE_TO))
+        with server(binary, ENGINES_ENABLED="true", VALHALLA_URL=engine.url) as (port, _):
+            status, text, _ = call(port, "POST", "/api/v1/routing/route", route_body(), ip="198.51.100.41")
+        return status == 404 and "geometry" not in text, f"status={status}"
+    finally:
+        engine.close()
+        delete_hazards(ids)
+
+
+@check("FUN-01", "routing with the engine down is a generic 502 that names no host or coordinate", 11)
+def _(binary):
+    engine = toy_valhalla()
+    url = engine.url
+    engine.close()  # nothing listens there any more
+    with server(binary, ENGINES_ENABLED="true", VALHALLA_URL=url) as (port, _):
+        status, text, _ = call(port, "POST", "/api/v1/routing/route", route_body(), ip="198.51.100.42")
+    leaked = [needle for needle in ("127.0.0.1", "71.6", "33.0", "alhalla") if needle in text]
+    return status == 502 and "error_id" in text and not leaked, f"status={status} leaked={leaked}"
+
+
+@check("FUN-01", "address search reaches Photon as one encoded parameter", 11)
+def _(binary):
+    engine = toy_photon()
+    hostile = "calle & limit=1000#x"
+    try:
+        with server(binary, ENGINES_ENABLED="true", PHOTON_URL=engine.url) as (port, _):
+            status, text, _ = call(port, "GET", f"/api/v1/geocoding/search?q={quote(hostile)}&limit=5", ip="198.51.100.43")
+        query = parse_qs(urlsplit(engine.requests[0][1]).query) if engine.requests else {}
+        items = json.loads(text) if status == 200 else []
+        ok = (
+            status == 200
+            and items
+            and items[0]["name"] == "Plaza de Armas"
+            and query.get("q") == [hostile]
+            and sorted(query) == ["limit", "q"]
+        )
+        return bool(ok), f"status={status} query={query}"
+    finally:
+        engine.close()
 
 
 def main():

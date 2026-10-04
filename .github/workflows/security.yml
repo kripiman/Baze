@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Security advisories
+
+# Runs on a schedule (and on demand) instead of on every push: a new RustSec advisory
+# must not block unrelated pull requests, but it must not go unnoticed either.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend/Cargo.lock'
+      - 'backend/deny.toml'
+      - '.github/workflows/security.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-advisories:
+    name: RustSec advisories and yanked crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check advisories
+        run: cargo deny check advisories

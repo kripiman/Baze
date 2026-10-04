@@ -45,7 +45,12 @@ async fn migrate() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "baze_server=info,baze_app=info,tower_http=info".into());
+        .unwrap_or_else(|_| {
+            // The domain crates log their own warnings (an engine without elevation data, for instance):
+            // leaving them out of the default would hide exactly what an operator needs to see.
+            "baze_server=info,baze_app=info,routing=info,geocoding=info,hazards=info,auth=info,realtime=info,tower_http=info"
+                .into()
+        });
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let config =

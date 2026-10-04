@@ -316,7 +316,7 @@
             }
           },
           "503": {
-            "description": "The hazard store is full",
+            "description": "The database is busy; retry later",
             "content": {
               "application/json": {
                 "schema": {

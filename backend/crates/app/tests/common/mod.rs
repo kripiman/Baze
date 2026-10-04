@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Shared helpers for the HTTP-level tests. They drive the real router in-process with
-//! `tower::ServiceExt::oneshot`, so no socket and no database are needed (the Postgres pool is lazy
-//! and the services under test do not touch it; accounts are an in-memory fake).
+//! `tower::ServiceExt::oneshot`, so no socket and no database are needed: accounts and hazards are
+//! in-memory fakes. The real stores are covered by the `db-tests` of their own crates.
 #![allow(dead_code)]
 
 use async_trait::async_trait;
@@ -18,14 +18,17 @@ use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
 use chrono::{DateTime, Duration, Utc};
 use geocoding::PhotonGeocodingService;
-use hazards::HazardService;
 use http_body_util::BodyExt;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use serde_json::{Value, json};
-use shared::{AccountContext, AccountService, AppError, AuthResponse, GeocodingProvider};
-use sqlx::postgres::PgPoolOptions;
+use shared::{
+    AccountContext, AccountService, AppError, AuthResponse, BoundingBox, CorridorHazards,
+    CreateHazardRequest, GeoJsonLineString, GeoJsonPolygon, GeocodingProvider, Hazard,
+    HazardStatus, HazardStore, Vote,
+};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -97,6 +100,93 @@ impl AccountService for FakeAccounts {
     }
 }
 
+/// In-memory stand-in for the PostGIS-backed hazard store. It keeps just enough behaviour for the
+/// HTTP layer to be exercised end to end: created reports are listed inside their box, voting on an
+/// unknown id is a 404. The voting rules themselves live in (and are tested against) the real store.
+#[derive(Default)]
+pub struct FakeHazards {
+    hazards: Mutex<Vec<Hazard>>,
+}
+
+#[async_trait]
+impl HazardStore for FakeHazards {
+    async fn create_hazard(
+        &self,
+        _account: &AccountContext,
+        request: &CreateHazardRequest,
+        _client_ip: IpAddr,
+    ) -> Result<Hazard, AppError> {
+        let now = Utc::now();
+        let hazard_type = request.category.hazard_type();
+        let hazard = Hazard {
+            id: Uuid::new_v4(),
+            category: request.category,
+            hazard_type,
+            status: match hazard_type {
+                shared::HazardType::Warning => HazardStatus::Confirmed,
+                shared::HazardType::Blocking => HazardStatus::Unconfirmed,
+            },
+            description: request.sanitized_description(),
+            upvotes: 1,
+            downvotes: 0,
+            location: request.location.clone(),
+            created_at: now,
+            expires_at: now + Duration::hours(24),
+        };
+        self.hazards.lock().unwrap().push(hazard.clone());
+        Ok(hazard)
+    }
+
+    async fn vote_hazard(
+        &self,
+        hazard_id: Uuid,
+        _account: &AccountContext,
+        vote: Vote,
+        _client_ip: IpAddr,
+    ) -> Result<Hazard, AppError> {
+        let mut hazards = self.hazards.lock().unwrap();
+        let hazard = hazards
+            .iter_mut()
+            .find(|h| h.id == hazard_id)
+            .ok_or_else(|| AppError::NotFound(format!("Hazard {hazard_id} not found")))?;
+        match vote {
+            Vote::Up => hazard.upvotes += 1,
+            Vote::Down => hazard.downvotes += 1,
+        }
+        Ok(hazard.clone())
+    }
+
+    async fn list_active_hazards(&self, bbox: &BoundingBox) -> Result<Vec<Hazard>, AppError> {
+        Ok(self
+            .hazards
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|h| bbox.contains_point(&h.location))
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait]
+impl CorridorHazards for FakeHazards {
+    async fn find_blocking_polygons_along_corridor(
+        &self,
+        _corridor: &GeoJsonLineString,
+        _buffer_meters: f64,
+    ) -> Result<Vec<GeoJsonPolygon>, AppError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_hazards_near_corridor(
+        &self,
+        _corridor: &GeoJsonLineString,
+        _buffer_meters: f64,
+    ) -> Result<Vec<Hazard>, AppError> {
+        Ok(Vec::new())
+    }
+}
+
 pub fn test_accounts(config: &AppConfig) -> Arc<FakeAccounts> {
     Arc::new(FakeAccounts::new(&config.jwt_secret))
 }
@@ -135,16 +225,8 @@ fn build_test_app(
     accounts: Arc<FakeAccounts>,
     geocoder: Arc<dyn GeocodingProvider>,
 ) -> Router {
-    let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://localhost/dummy")
-        .expect("lazy pool");
     let realtime_service = RealtimeService::new(16);
-    let hazard_service = Arc::new(HazardService::new(
-        pool,
-        config.confirmation_threshold,
-        config.default_ttl_hours,
-        Arc::new(realtime_service.clone()),
-    ));
+    let hazard_service = Arc::new(FakeHazards::default());
     let state = AppState {
         auth_service: accounts,
         routing_service: ValhallaRoutingService::new(

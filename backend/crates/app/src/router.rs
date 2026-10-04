@@ -14,13 +14,12 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::stream::{Stream, StreamExt};
-use hazards::HazardService;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use shared::{
     AccountService, AuthResponse, BoundingBox, CreateHazardRequest, GeocodingItem,
-    GeocodingProvider, GeocodingQuery, Hazard, HazardVoteRequest, MAX_LIST_BBOX_SPAN_DEGREES,
-    MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest, RouteResponse,
+    GeocodingProvider, GeocodingQuery, Hazard, HazardStore, HazardVoteRequest,
+    MAX_LIST_BBOX_SPAN_DEGREES, MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest, RouteResponse,
 };
 use std::{sync::Arc, time::Duration};
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -36,7 +35,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub config: AppConfig,
     pub auth_service: Arc<dyn AccountService>,
-    pub hazard_service: Arc<HazardService>,
+    pub hazard_service: Arc<dyn HazardStore>,
     pub routing_service: ValhallaRoutingService,
     pub geocoding_service: Arc<dyn GeocodingProvider>,
     pub realtime_service: RealtimeService,
@@ -209,7 +208,7 @@ pub async fn list_hazards_handler(
         (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse),
-        (status = 503, description = "The hazard store is full", body = ErrorResponse)
+        (status = 503, description = "The database is busy; retry later", body = ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -224,7 +223,7 @@ pub async fn create_hazard_handler(
     payload.validate()?;
     let hazard = state
         .hazard_service
-        .create_hazard(account.account_id, &payload, client_ip.0)
+        .create_hazard(&account, &payload, client_ip.0)
         .await?;
     Ok((StatusCode::CREATED, AppJson(hazard)))
 }
@@ -260,7 +259,7 @@ pub async fn vote_hazard_handler(
 ) -> Result<AppJson<Hazard>, HttpError> {
     let updated = state
         .hazard_service
-        .vote_hazard(id, account.account_id, payload.vote, client_ip.0)
+        .vote_hazard(id, &account, payload.vote, client_ip.0)
         .await?;
     Ok(AppJson(updated))
 }

@@ -81,19 +81,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         pool.clone(),
         config.confirmation_threshold,
         config.default_ttl_hours,
+        // Keys the tags of voter networks (ADR-0008); a distinct label separates it from token MACs.
+        config.jwt_secret.as_bytes(),
         Arc::new(realtime_service.clone()),
     ));
 
-    // Tarea periódica de purga de reportes expirados (AGENTS §4.4)
+    // Tarea periódica de purga de reportes expirados (AGENTS §4.4). Las lecturas ya ignoran los
+    // caducados; esto solo recupera espacio. Un DELETE interrumpido se revierte entero.
     let purge_service = hazard_service.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    let purge_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
             interval.tick().await;
-            if let Ok(purged) = purge_service.purge_expired()
-                && purged > 0
-            {
-                tracing::debug!(purged_count = purged, "Purged expired hazard reports");
+            match purge_service.purge_expired().await {
+                Ok(0) => {}
+                Ok(purged) => tracing::info!(purged, "Purged expired hazard reports"),
+                Err(error) => tracing::warn!(%error, "Purging expired hazard reports failed"),
             }
         }
     });
@@ -122,6 +125,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Baze API listening on http://{}", addr);
 
     serve(listener, app, ServerOptions::default(), shutdown_signal()).await?;
+    purge_task.abort();
     tracing::info!("Baze API stopped");
 
     Ok(())

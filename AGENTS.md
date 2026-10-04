@@ -72,6 +72,7 @@ baze/
 │       └── reports/          # Creación y votación de reportes
 ├── infra/                    # Despliegue en VPS
 │   ├── compose.yaml          # Orquestación (Caddy, Backend, PostGIS, Valhalla, Photon)
+│   ├── compose.dev.yaml      # Superposición solo para desarrollo (puertos en 127.0.0.1)
 │   ├── caddy/Caddyfile       # Configuración TLS y proxy reverso
 │   └── .env.example          # Plantilla de variables de entorno
 ├── data/                     # Pipeline de ingestión y compilación de datos OSM
@@ -123,8 +124,8 @@ cd android && ./gradlew checkLicenses
 
 ### Infraestructura y Datos
 ```bash
-# Validar sintaxis de docker compose
-docker compose -f infra/compose.yaml config
+# Validar docker compose y sus invariantes de seguridad (no arranca nada; usa valores falsos)
+bash scripts/compose-check.sh
 
 # Ejecutar el pipeline de datos (desde la raíz)
 bash data/scripts/01-download-extract.sh
@@ -177,6 +178,6 @@ Antes de considerar una tarea completada:
 1. Validar compilación de backend: `cargo check --workspace --all-targets`.
 2. Validar que no existan advertencias de clippy: `cargo clippy --workspace --all-targets -- -D warnings`.
 3. Verificar formato: `cargo fmt --all -- --check`.
-4. Validar Docker Compose: `docker compose -f infra/compose.yaml config`.
+4. Validar Docker Compose: `bash scripts/compose-check.sh` (`make compose-check`).
 5. Si el SDK de Android está configurado: `cd android && ./gradlew assembleDebug`.
 6. Confirmar que no se hayan generado archivos no deseados fuera de `.gitignore`.

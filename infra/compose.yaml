@@ -1,37 +1,75 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+# Stack de producción. Solo Caddy publica puertos. Para desarrollo local (puertos del backend y de
+# PostGIS en 127.0.0.1) se superpone infra/compose.dev.yaml. Valida el archivo con scripts/compose-check.sh.
+
 name: baze
+
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
   caddy:
+    <<: *hardened
     image: caddy:2.9.1-alpine
     container_name: baze-caddy
-    restart: unless-stopped
+    # Solo necesita enlazar los puertos 80 y 443.
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_HTTP_BIND:-0.0.0.0}:80:80"
+      - "${CADDY_HTTP_BIND:-0.0.0.0}:443:443"
     environment:
       - DOMAIN=${DOMAIN:-localhost}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      - ../data/out:/var/www/static:ro
+      # Solo los artefactos públicos (teselas y estilos), nunca el PBF, los grafos ni los índices.
+      - ../data/out/public:/var/www/static:ro
     networks:
-      - public
-      - internal
+      internal:
+        # IP fija: el backend solo confía en X-Real-IP si la conexión viene de aquí.
+        ipv4_address: 172.30.0.2
+      public: {}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    pids_limit: 256
+    mem_limit: 256m
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   backend:
+    <<: *hardened
     build:
       context: ../backend
       dockerfile: Dockerfile
+      args:
+        # El hash queda dentro de la imagen: /source informa el código realmente desplegado.
+        GIT_COMMIT_HASH: ${GIT_COMMIT_HASH:-}
     container_name: baze-backend
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8080:8080" # Solo expuesto a localhost en desarrollo
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       - ENVIRONMENT=${ENVIRONMENT:?Set ENVIRONMENT explicitly to development or production in .env}
       - PORT=${PORT:-8080}
@@ -44,24 +82,46 @@ services:
       - HAZARD_CONFIRMATION_THRESHOLD=${HAZARD_CONFIRMATION_THRESHOLD:-3}
       - HAZARD_DEFAULT_TTL_HOURS=${HAZARD_DEFAULT_TTL_HOURS:-24}
       - SOURCE_REPO_URL=${SOURCE_REPO_URL:-https://github.com/kripiman/Baze}
-      - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-dev}
-      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      # Solo Caddy (IP fija) es proxy de confianza: cualquier otro contenedor no puede falsear X-Real-IP.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.30.0.2}
       # Vacío = valor por defecto del backend
       - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-}
       - MAX_CONCURRENT_REQUESTS=${MAX_CONCURRENT_REQUESTS:-}
       - ENABLE_API_DOCS=${ENABLE_API_DOCS:-}
     networks:
       - internal
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/baze-server", "healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 15s
+    pids_limit: 256
+    mem_limit: 512m
+    ulimits:
+      nofile:
+        soft: 16384
+        hard: 16384
     depends_on:
       postgis:
         condition: service_healthy
 
   postgis:
+    <<: *hardened
     image: postgis/postgis:16-3.4-alpine
     container_name: baze-postgis
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5432:5432" # Solo expuesto a localhost en desarrollo
+    # La entrada de la imagen arranca como root, ajusta permisos del directorio de datos y cede a postgres.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-baze_db}
       - POSTGRES_USER=${POSTGRES_USER:-baze_user}
@@ -71,39 +131,51 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-baze_user} -d ${POSTGRES_DB:-baze_db}"]
+      # -h 127.0.0.1: durante la inicialización solo escucha el socket unix; así no se da por listo antes de tiempo.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-baze_user} -d ${POSTGRES_DB:-baze_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
+    pids_limit: 512
+    mem_limit: 1g
 
+  # Los motores de ruteo y geocodificación aún no están conectados al backend (responde 501) y
+  # necesitan datos generados con `make data-build`. Se activan con `--profile engines`.
   valhalla:
+    <<: *hardened
     image: gisops/valhalla:3.4.0
     container_name: baze-valhalla
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8002:8002" # Solo expuesto a localhost en desarrollo
+    profiles: ["engines"]
     volumes:
       - ../data/out/valhalla:/custom_files:ro
     networks:
       - internal
+    pids_limit: 512
+    mem_limit: 2g
 
   photon:
+    <<: *hardened
     image: ghcr.io/komoot/photon:0.5.0 # TODO(verify): Verificar compatibilidad de la imagen y arquitectura
     container_name: baze-photon
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:2322:2322" # Solo expuesto a localhost en desarrollo
+    profiles: ["engines"]
     volumes:
       - ../data/out/photon:/photon/photon_data:ro
     networks:
       - internal
+    pids_limit: 512
+    mem_limit: 2g
 
 networks:
   public:
     driver: bridge
   internal:
     driver: bridge
+    # Sin salida a Internet ni puertos publicados. Subred fija para poder fijar la IP de Caddy.
     internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   postgis_data:

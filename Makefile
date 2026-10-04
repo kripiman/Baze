@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env openapi
+.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env openapi compose-check
 
 help:
 	@echo "Baze Monorepo Management"
@@ -13,6 +13,7 @@ help:
 	@echo "backend-fmt    : Apply rustfmt to the Rust backend"
 	@echo "backend-clippy : Run clippy (-D warnings) on the Rust backend"
 	@echo "backend-test   : Run the Rust backend unit tests (no database needed)"
+	@echo "compose-check  : Validate the Docker Compose stack and its security invariants"
 	@echo "openapi        : Regenerate contracts/openapi.json from the backend code"
 	@echo "backend-deny   : cargo-deny checks (bans, licenses, sources, advisories)"
 	@echo "toolchain-check: Verify that every Rust toolchain pin agrees"
@@ -22,12 +23,16 @@ help:
 dev-env:
 	bash scripts/gen-env.sh
 
+# Local development: the dev overlay publishes the backend (8080) and PostGIS (5432) on 127.0.0.1 only,
+# and CADDY_HTTP_BIND keeps the proxy off the local network too.
+DEV_COMPOSE = docker compose -f infra/compose.yaml -f infra/compose.dev.yaml --env-file infra/.env
+
 dev-up: dev-env
-	GIT_COMMIT_HASH="$$(git rev-parse HEAD)" docker compose -f infra/compose.yaml --env-file infra/.env up -d --build
+	CADDY_HTTP_BIND=127.0.0.1 GIT_COMMIT_HASH="$$(git rev-parse HEAD)" $(DEV_COMPOSE) up -d --build
 
 dev-down:
 	@if [ -f infra/.env ]; then \
-		docker compose -f infra/compose.yaml --env-file infra/.env down; \
+		CADDY_HTTP_BIND=127.0.0.1 $(DEV_COMPOSE) down; \
 	else \
 		echo "infra/.env not found: nothing to stop (run 'make dev-env' first)"; \
 	fi
@@ -49,6 +54,9 @@ backend-fmt:
 backend-clippy:
 	cd backend && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+compose-check:
+	bash scripts/compose-check.sh
+
 openapi:
 	cd backend && cargo run --locked -q -p baze-app --bin export-openapi
 
@@ -66,3 +74,4 @@ data-build:
 	bash data/scripts/02-build-pmtiles.sh
 	bash data/scripts/03-build-valhalla.sh
 	bash data/scripts/04-build-photon.sh
+	bash data/scripts/05-publish-static.sh

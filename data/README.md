@@ -26,6 +26,7 @@ Los artefactos se almacenan en `data/out/` (carpeta ignorada en git):
 - `data/out/tiles.pmtiles`: Archivo único de teselas vectoriales OpenMapTiles optimizado para lectura offline.
 - `data/out/valhalla/`: Archivo `valhalla.json` y mosaicos del grafo (`tiles.tar` o directorio `valhalla_tiles/`) con datos de elevación SRTM integrados.
 - `data/out/photon/`: Índice de búsqueda de Photon para consultas de autocompletado y geocodificación reversa.
+- `data/out/public/`: lo único que Caddy sirve públicamente en `/static` (`tiles.pmtiles` y `styles/`). Lo genera `data/scripts/05-publish-static.sh`. El extracto crudo, el grafo y el índice **no** se publican.
 
 ## 3. Ejecución por Pasos
 

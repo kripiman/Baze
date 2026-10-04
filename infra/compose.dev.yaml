@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Superposición SOLO para desarrollo local: publica el backend y PostGIS en 127.0.0.1 (nunca en
+# otras interfaces) para poder usar `cargo run`, `psql` o `curl` sin pasar por Caddy.
+#
+#   docker compose -f infra/compose.yaml -f infra/compose.dev.yaml --env-file infra/.env up -d
+#
+# Para que Caddy tampoco escuche fuera de loopback, `make dev-up` define CADDY_HTTP_BIND=127.0.0.1.
+#
+# Un contenedor solo en una red `internal: true` no puede publicar puertos; por eso aquí se les
+# añade una red `dev` que sí tiene salida al host.
+
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - internal
+      - dev
+
+  postgis:
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - internal
+      - dev
+
+networks:
+  dev:
+    driver: bridge

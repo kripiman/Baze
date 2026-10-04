@@ -561,7 +561,13 @@ mod tests {
     #[test]
     fn env_example_ships_no_secret_values() {
         let vars = parse_env_template(include_str!("../../../../infra/.env.example"));
-        for key in ["JWT_SECRET", "POSTGRES_PASSWORD", "DATABASE_URL"] {
+        for key in [
+            "JWT_SECRET",
+            "POSTGRES_PASSWORD",
+            "APP_DB_PASSWORD",
+            "DATABASE_URL",
+            "MIGRATION_DATABASE_URL",
+        ] {
             assert_eq!(
                 vars.get(key).map(String::as_str),
                 Some(""),

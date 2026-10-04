@@ -18,6 +18,14 @@ x-hardened: &hardened
       max-size: "10m"
       max-file: "3"
 
+# El mismo build sirve al backend y al servicio de migraciones.
+x-backend-build: &backend-build
+  context: ../backend
+  dockerfile: Dockerfile
+  args:
+    # El hash queda dentro de la imagen: /source informa el código realmente desplegado.
+    GIT_COMMIT_HASH: ${GIT_COMMIT_HASH:-}
+
 services:
   caddy:
     <<: *hardened
@@ -59,12 +67,8 @@ services:
 
   backend:
     <<: *hardened
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
-      args:
-        # El hash queda dentro de la imagen: /source informa el código realmente desplegado.
-        GIT_COMMIT_HASH: ${GIT_COMMIT_HASH:-}
+    image: baze-backend
+    build: *backend-build
     container_name: baze-backend
     user: "10001:10001"
     read_only: true
@@ -106,6 +110,34 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
+      # El esquema debe estar migrado antes de arrancar; el backend no tiene permiso para migrar.
+      migrate:
+        condition: service_completed_successfully
+
+  # Aplica las migraciones con el rol dueño del esquema y termina. Es el único contenedor que
+  # recibe esas credenciales; el backend usa el rol de aplicación (DATABASE_URL), sin DDL.
+  migrate:
+    <<: *hardened
+    image: baze-backend
+    build: *backend-build
+    container_name: baze-migrate
+    restart: "no"
+    command: ["migrate"]
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      - DATABASE_URL=${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL explicitly in .env}
+    networks:
+      - internal
+    healthcheck:
+      disable: true
+    pids_limit: 64
+    mem_limit: 256m
+    depends_on:
+      postgis:
+        condition: service_healthy
 
   postgis:
     <<: *hardened
@@ -126,8 +158,11 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-baze_db}
       - POSTGRES_USER=${POSTGRES_USER:-baze_user}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD explicitly in .env}
+      # Contraseña del rol de aplicación `baze_app`, que crea infra/postgres/init/01-roles.sh al inicializar.
+      - APP_DB_PASSWORD=${APP_DB_PASSWORD:?Set APP_DB_PASSWORD explicitly in .env}
     volumes:
       - postgis_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
       - internal
     healthcheck:

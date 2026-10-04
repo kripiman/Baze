@@ -18,7 +18,9 @@ trap 'rm -f "$env_file"' EXIT
 cat > "$env_file" <<'ENV'
 ENVIRONMENT=production
 POSTGRES_PASSWORD=fake-password-for-validation-only
-DATABASE_URL=postgres://baze_user:fake-password-for-validation-only@postgis:5432/baze_db
+APP_DB_PASSWORD=fake-app-password-for-validation-only
+DATABASE_URL=postgres://baze_app:fake-app-password-for-validation-only@postgis:5432/baze_db
+MIGRATION_DATABASE_URL=postgres://baze_user:fake-password-for-validation-only@postgis:5432/baze_db
 JWT_SECRET=fake-secret-for-validation-only
 GIT_COMMIT_HASH=0123456789abcdef0123456789abcdef01234567
 ENV

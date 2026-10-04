@@ -21,12 +21,19 @@ rand_hex() {
 }
 
 db_password="$(rand_hex)"
+app_password="$(rand_hex)"
 jwt_secret="$(rand_hex)"
+
+# Database name and owner come from the template so the URLs always match them.
+db_name="$(sed -n 's/^POSTGRES_DB=//p' "$example" | head -n1)"
+db_owner="$(sed -n 's/^POSTGRES_USER=//p' "$example" | head -n1)"
 
 umask 077
 sed \
   -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${db_password}|" \
-  -e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://baze_user:${db_password}@postgis:5432/baze_db|" \
+  -e "s|^APP_DB_PASSWORD=.*|APP_DB_PASSWORD=${app_password}|" \
+  -e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://baze_app:${app_password}@postgis:5432/${db_name}|" \
+  -e "s|^MIGRATION_DATABASE_URL=.*|MIGRATION_DATABASE_URL=postgres://${db_owner}:${db_password}@postgis:5432/${db_name}|" \
   -e "s|^JWT_SECRET=.*|JWT_SECRET=${jwt_secret}|" \
   "$example" > "$target"
 

@@ -3,6 +3,23 @@
 
 plugins {
     id("baze.android.application")
+    alias(libs.plugins.licensee)
+}
+
+// Only licenses compatible with distributing the app under AGPL-3.0-or-later (and through F-Droid)
+// may ship. A new dependency under any other license fails `checkLicenses` until it is reviewed.
+licensee {
+    allow("Apache-2.0")
+    allow("MIT")
+    allow("BSD-2-Clause")
+    allow("BSD-3-Clause")
+}
+
+// AGENTS §6.1: `./gradlew checkLicenses`. It audits what the release APK really contains.
+tasks.register("checkLicenses") {
+    group = "verification"
+    description = "Fails if the release APK ships a dependency whose license is not approved"
+    dependsOn("licenseeRelease")
 }
 
 dependencies {

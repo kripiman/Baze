@@ -16,10 +16,16 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes the run in progress for the same ref.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Lint, Test, Assemble & Licenses
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: android
@@ -33,20 +39,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # setup-gradle validates the checksum of gradle-wrapper.jar before running anything.
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@94baf225fe0a508e581a564467443d0e2379123b # v4.3.0
 
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Run Android Lint
-        run: ./gradlew lint
-
-      - name: Run Unit Tests
-        run: ./gradlew test
-
-      - name: Assemble Debug APK
-        run: ./gradlew assembleDebug
-
-      - name: Verify Open Source Licenses
-        run: ./gradlew checkLicenses # TODO(verify): Requiere configuración con plugin Licensee o LicenseTools
+      # One invocation with --continue, so a single run reports every failing task, not only the first.
+      # checkPurity: the core modules stay free of java.*/android.* (AGENTS §6.2).
+      # assembleRelease: R8 and resource shrinking, which is where missing keep rules show up.
+      # checkLicenses: every dependency of the release APK has an approved license.
+      - name: Lint, test, assemble and check licenses
+        run: ./gradlew lint test checkPurity assembleDebug assembleRelease checkLicenses --continue --stacktrace

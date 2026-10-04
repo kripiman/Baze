@@ -43,7 +43,7 @@ curl http://127.0.0.1:8080/health
 make dev-down
 ```
 
-Ruteo y geocodificación responden `501` hasta que se conecten Valhalla y Photon; el resto de la API (cuentas, reportes, votos y tiempo real) funciona. Valhalla y Photon necesitan datos generados con `make data-build` y se activan con `--profile engines` (ver [`data/README.md`](data/README.md)).
+Ruteo y geocodificación responden `501` mientras `ENGINES_ENABLED` esté apagado (el valor por defecto); el resto de la API (cuentas, reportes, votos y tiempo real) funciona. Valhalla y Photon necesitan datos generados con `make data-build`, se levantan con `--profile engines` y se usan con `ENGINES_ENABLED=true` (ver [`data/README.md`](data/README.md)).
 
 ## 4. Comandos Principales
 

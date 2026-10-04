@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 Cómo configurar, desplegar y mantener el backend. Las decisiones de fondo están en los ADR [0007](adr/0007-identity-voting-and-abuse-limits.md) y [0008](adr/0008-database-roles-migrations-and-vote-networks.md).
 
-> **Estado**: el backend persiste reportes, votos y cuentas, pero el ruteo y la geocodificación responden `501 Not Implemented` hasta que se conecten Valhalla y Photon. No expongas un despliegue público antes de decidir cómo se cubrirá eso.
+> **Estado**: el backend persiste reportes, votos y cuentas. Ruteo y geocodificación tienen cliente real, pero solo se usan con `ENGINES_ENABLED=true`; apagado (por defecto) responden `501 Not Implemented`. Los motores reales y sus datos se verifican en el pipeline de datos (`data/README.md`): hasta que ese paso esté verde, no actives los motores en un despliegue público.
 
 ## 1. Secretos y primer arranque
 
@@ -91,7 +91,8 @@ Todas las variables se validan al arrancar. Vacío o ausente = valor por defecto
 | `REQUEST_TIMEOUT_SECONDS` | `15` | 1 a 120 | Plazo por petición (408) |
 | `MAX_CONCURRENT_REQUESTS` | `512` | 1 a 100000 | Peticiones simultáneas en vuelo |
 | `ENABLE_API_DOCS` | `true` en development, `false` en production | `true`, `false` | Swagger UI y `/api-docs` |
-| `VALHALLA_URL`, `PHOTON_URL` | `http://localhost:8002`, `http://localhost:2322` | `http://` interno | Motores (hoy sin conectar) |
+| `ENGINES_ENABLED` | `false` | `true`, `false` | Usar Valhalla y Photon; apagado, ruteo y búsqueda responden 501 |
+| `VALHALLA_URL`, `PHOTON_URL` | `http://localhost:8002`, `http://localhost:2322` | `http://` interno | Dónde están los motores (solo con `ENGINES_ENABLED=true`) |
 | `SOURCE_REPO_URL`, `GIT_COMMIT_HASH` | repositorio, `dev` | `https://`; hash hex en producción | Respuesta de `/source` |
 
 Subir `ACCOUNT_MIN_AGE_SECONDS` o `HAZARD_CONFIRMATION_THRESHOLD` es la primera palanca si aparece abuso coordinado (ADR-0007, límites aceptados).

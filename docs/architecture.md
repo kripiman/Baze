@@ -28,7 +28,7 @@ flowchart TD
   PIPE -.->|índice| PH
 ```
 
-> **Estado de implementación**: el backend ya persiste cuentas, reportes y votos en PostGIS, autentica con tokens que caducan, aplica límites de abuso y publica el contrato OpenAPI. El ruteo (`POST /api/v1/routing/route`) y la geocodificación (`GET /api/v1/geocoding/search`) responden `501 Not Implemented` hasta conectar Valhalla y Photon: una ruta falsa con `200` sería un riesgo físico para quien la siga. Las consultas espaciales que alimentarán ese ruteo ya existen y están probadas contra PostGIS (sección 3.3).
+> **Estado de implementación**: el backend persiste cuentas, reportes y votos en PostGIS, autentica con tokens que caducan, aplica límites de abuso y publica el contrato OpenAPI. Los clientes de Valhalla (ruteo con evitación de cierres) y de Photon (búsqueda) están implementados y probados contra motores simulados y contra PostGIS real, pero **se activan con `ENGINES_ENABLED=true`**: apagado (el valor por defecto), `POST /api/v1/routing/route` y `GET /api/v1/geocoding/search` responden `501 Not Implemented`. Una ruta falsa con `200` sería un riesgo físico para quien la siga. Las imágenes y los datos de los motores reales aún no están verificados de punta a punta (ver `data/README.md`), por eso el valor por defecto sigue apagado.
 
 ## 2. Componentes del Sistema
 
@@ -78,7 +78,12 @@ Para evitar enviar todos los reportes de una ciudad al motor de ruteo:
    ```
    Si hay más de 500 bloqueos en el corredor la consulta falla en lugar de truncar: una ruta que ignora un cierre que nunca se le comunicó es peor que ninguna ruta.
 3. Si **no hay cruce**, se retorna de inmediato la ruta original.
-4. Si **hay cruce**, se construyen polígonos delimitadores (buffers) alrededor de los bloqueos intersecados y se repite la petición a Valhalla agregando el parámetro `exclude_polygons`. Valhalla impone límites en la cantidad y tamaño de estos polígonos, garantizando que solo se envíen los obstáculos que efectivamente impactan la trayectoria.
+4. Si **hay cruce**, se construyen polígonos delimitadores (buffers) alrededor de los bloqueos intersecados y se repite la petición a Valhalla agregando `exclude_polygons`. La ruta nueva **se vuelve a comprobar**: puede cruzar otros cierres, y entonces se repite (hasta 3 re-cálculos, 4 llamadas al motor como máximo por petición).
+5. **Fail-closed**: una ruta que cruza un cierre confirmado nunca se entrega como si estuviera bien. Se responde un error cuando:
+   - el motor devuelve otra vez una ruta que toca un cierre que se le pidió evitar (por ejemplo, el destino está dentro del área cerrada) o no hay ruta alternativa: `404`;
+   - hacen falta más de 50 polígonos (límite del perímetro total de exclusiones de Valhalla, ver `MAX_EXCLUDE_POLYGONS`), más de 500 cierres en el corredor, o tras 3 re-cálculos aún aparecen cierres nuevos: `503` con `Retry-After`;
+   - el motor falla o responde algo inválido: `502` genérico con `error_id` (el detalle va solo al log, sin coordenadas).
+6. **Rutas largas**: el almacén acepta como máximo 10 000 puntos por corredor. La geometría se simplifica (Douglas-Peucker, tolerancia de 2 m, duplicada hasta 16 m si hace falta) y la búsqueda se ensancha en esa tolerancia, de modo que ningún cierre a 15 m de la ruta real puede perderse. La respuesta lleva la geometría completa. Origen y destino deben estar a lo sumo a 150 km en línea recta.
 
 ### 3.4. Alertas de Proximidad en el Dispositivo y SSE Eficiente
 - En la respuesta inicial de la ruta (`/api/v1/routing/route`), el backend incluye la lista de peligros vigentes dentro del corredor de la ruta (buffer de ~50 metros).

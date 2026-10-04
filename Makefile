@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check
+.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env
 
 help:
 	@echo "Baze Monorepo Management"
 	@echo "------------------------"
+	@echo "dev-env        : Create infra/.env with random secrets (never overwrites an existing one)"
 	@echo "dev-up         : Start infrastructure services (PostGIS, Valhalla, Photon, Caddy)"
 	@echo "dev-down       : Stop infrastructure services"
 	@echo "backend-check  : Format check, clippy (-D warnings) and unit tests for the Rust backend"
@@ -17,19 +18,17 @@ help:
 	@echo "android-build  : Compile Android application (assembleDebug)"
 	@echo "data-build     : Run OSM data preparation pipeline (PMTiles, Valhalla, Photon)"
 
-dev-up:
-	@if [ ! -f infra/.env ]; then \
-		echo "Notice: infra/.env not found, using infra/.env.example for local development"; \
-		docker compose -f infra/compose.yaml --env-file infra/.env.example up -d; \
-	else \
-		docker compose -f infra/compose.yaml --env-file infra/.env up -d; \
-	fi
+dev-env:
+	bash scripts/gen-env.sh
+
+dev-up: dev-env
+	GIT_COMMIT_HASH="$$(git rev-parse HEAD)" docker compose -f infra/compose.yaml --env-file infra/.env up -d --build
 
 dev-down:
-	@if [ ! -f infra/.env ]; then \
-		docker compose -f infra/compose.yaml --env-file infra/.env.example down; \
-	else \
+	@if [ -f infra/.env ]; then \
 		docker compose -f infra/compose.yaml --env-file infra/.env down; \
+	else \
+		echo "infra/.env not found: nothing to stop (run 'make dev-env' first)"; \
 	fi
 
 # The recipes `cd backend` so rustup picks up backend/rust-toolchain.toml

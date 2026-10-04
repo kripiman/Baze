@@ -11,11 +11,22 @@ use thiserror::Error;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+mod geometry;
+pub use geometry::{haversine_meters, simplify_line};
+
 /// Widest bounding box (degrees per side) a client may request when listing hazards (~55 km).
 pub const MAX_LIST_BBOX_SPAN_DEGREES: f64 = 0.5;
 /// Widest bounding box (degrees per side) for the realtime stream: it follows a whole route (~220 km).
 pub const MAX_STREAM_BBOX_SPAN_DEGREES: f64 = 2.0;
 const _: () = assert!(MAX_STREAM_BBOX_SPAN_DEGREES > MAX_LIST_BBOX_SPAN_DEGREES);
+
+/// Farthest apart (straight line, in meters) the origin and destination of a route may be. A longer
+/// trip is not a commute and would make the routing engine work for minutes.
+pub const MAX_ROUTE_DISTANCE_METERS: f64 = 150_000.0;
+
+/// Most points of a route corridor the hazard store accepts in one query. Routes are simplified to fit
+/// (see [`simplify_line`]); longer lines are refused rather than sent to the database.
+pub const MAX_CORRIDOR_POINTS: usize = 10_000;
 
 pub const CLIENT_IPV4_PREFIX: u8 = 32;
 pub const CLIENT_IPV6_PREFIX: u8 = 64;
@@ -331,6 +342,35 @@ fn is_bidi_override(c: char) -> bool {
     matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
+/// Text that comes from third-party data (OpenStreetMap names and maneuver instructions) as it is shown to
+/// people: control and bidirectional override characters never reach a screen, runs of whitespace become one
+/// space, and the result is at most `max_chars` characters (not bytes) long.
+pub fn clean_display_text(text: &str, max_chars: usize) -> String {
+    let mut cleaned = String::with_capacity(text.len().min(max_chars * 4));
+    let mut pending_space = false;
+    let mut chars = 0;
+    for c in text.chars().filter(|c| !is_bidi_override(*c)) {
+        if c.is_control() || c.is_whitespace() {
+            pending_space = chars > 0;
+            continue;
+        }
+        if chars >= max_chars {
+            break;
+        }
+        if pending_space {
+            if chars + 1 >= max_chars {
+                break;
+            }
+            cleaned.push(' ');
+            chars += 1;
+            pending_space = false;
+        }
+        cleaned.push(c);
+        chars += 1;
+    }
+    cleaned
+}
+
 impl CreateHazardRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         self.location.validate()?;
@@ -416,6 +456,12 @@ impl RouteRequest {
             return Err(AppError::Validation(
                 "Origin and destination cannot be identical".into(),
             ));
+        }
+        if haversine_meters(&self.origin, &self.destination) > MAX_ROUTE_DISTANCE_METERS {
+            return Err(AppError::Validation(format!(
+                "Origin and destination must be at most {} km apart",
+                MAX_ROUTE_DISTANCE_METERS / 1000.0
+            )));
         }
         Ok(())
     }
@@ -532,6 +578,14 @@ pub trait CorridorHazards: Send + Sync {
 
 pub trait HazardNotifier: Send + Sync {
     fn broadcast_hazard(&self, hazard: &Hazard);
+}
+
+/// Bicycle routing as the HTTP layer sees it.
+#[async_trait]
+pub trait RoutingProvider: Send + Sync {
+    /// The best route from origin to destination that does not cross a confirmed closure. When no such
+    /// route can be computed the answer is an error, never a route that crosses one.
+    async fn route_bicycle(&self, request: &RouteRequest) -> Result<RouteResponse, AppError>;
 }
 
 #[async_trait]
@@ -685,5 +739,60 @@ mod tests {
     #[test]
     fn absent_description_is_valid() {
         assert!(report(None).validate().is_ok());
+    }
+
+    fn route(origin: [f64; 2], destination: [f64; 2]) -> RouteRequest {
+        RouteRequest {
+            origin: GeoJsonPoint::new(origin[0], origin[1]),
+            destination: GeoJsonPoint::new(destination[0], destination[1]),
+        }
+    }
+
+    #[test]
+    fn a_commute_is_a_valid_route_request() {
+        assert!(route([-70.65, -33.45], [-70.55, -33.40]).validate().is_ok());
+    }
+
+    #[test]
+    fn a_route_across_the_country_is_rejected() {
+        // Santiago to Puerto Montt is ~850 km in a straight line.
+        let error = route([-70.65, -33.45], [-72.94, -41.47])
+            .validate()
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Validation(m) if m.contains("150 km")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_distance_limit_is_measured_on_the_sphere() {
+        // 1.3 degrees of latitude is ~144 km (accepted), 1.4 is ~156 km (refused): the limit applies
+        // to the true distance, not to degrees.
+        assert!(route([-70.0, -33.0], [-70.0, -34.3]).validate().is_ok());
+        assert!(route([-70.0, -33.0], [-70.0, -34.4]).validate().is_err());
+    }
+
+    #[test]
+    fn display_text_loses_control_and_bidi_characters_and_collapses_whitespace() {
+        assert_eq!(
+            clean_display_text("  Avenida \u{202e}Providencia\n\t1234  ", 100),
+            "Avenida Providencia 1234"
+        );
+        assert_eq!(clean_display_text("a\u{0}b\u{1b}[31mc", 100), "a b [31mc");
+        assert_eq!(clean_display_text("\n\n", 100), "");
+        assert_eq!(clean_display_text("", 100), "");
+    }
+
+    #[test]
+    fn display_text_is_cut_by_characters_not_bytes() {
+        assert_eq!(
+            clean_display_text(&"ñ".repeat(300), 200).chars().count(),
+            200
+        );
+        assert_eq!(clean_display_text("abc def", 5), "abc d");
+        // A cut never leaves a trailing space.
+        assert_eq!(clean_display_text("abc def", 4), "abc");
+        assert_eq!(clean_display_text("abcdef", 0), "");
     }
 }

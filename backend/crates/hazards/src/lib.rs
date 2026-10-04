@@ -35,8 +35,8 @@ pub const MAX_LIST_RESULTS: usize = 500;
 /// Radius (metres) of the area a confirmed blocking report closes to routing.
 pub const BLOCKING_EXCLUSION_RADIUS_METERS: f64 = 30.0;
 
-/// Most points a corridor may have; a route of hundreds of kilometres has far fewer.
-pub const MAX_CORRIDOR_POINTS: usize = 10_000;
+/// Most points a corridor may have. The routing crate simplifies routes to fit, so this is shared.
+pub use shared::MAX_CORRIDOR_POINTS;
 
 /// Widest corridor (metres on each side of the route) a query accepts.
 pub const MAX_CORRIDOR_BUFFER_METERS: f64 = 5_000.0;

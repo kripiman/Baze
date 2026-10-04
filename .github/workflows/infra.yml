@@ -79,7 +79,10 @@ jobs:
 
       - name: Inspect the image
         run: |
-          image="$(${COMPOSE} images -q backend)"
+          # `compose images` only lists images of existing containers; `config --images` names the built one.
+          image="$(${COMPOSE} config --images | grep -E '(^|[-_/])backend$' | head -n1)"
+          [ -n "$image" ] || { echo "could not resolve the backend image name"; exit 1; }
+          echo "backend image: $image"
           echo "image size: $(docker image inspect --format '{{.Size}}' "$image") bytes"
           user="$(docker image inspect --format '{{.Config.User}}' "$image")"
           [ "$user" = "baze:baze" ] || { echo "unexpected user: $user"; exit 1; }

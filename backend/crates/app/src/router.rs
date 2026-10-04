@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::config::AppConfig;
-use crate::http::error::{AppJson, HttpError};
+use crate::http::error::{AppJson, ErrorResponse, HttpError};
 use crate::http::extract::{AuthenticatedAccount, ClientIp};
 use crate::openapi::{HealthResponse, SourceResponse};
 use crate::rate_limit::{RateLimiter, rate_limit_api_middleware, rate_limit_signup_middleware};
@@ -110,7 +110,8 @@ pub async fn source_handler(State(state): State<Arc<AppState>>) -> Json<SourceRe
     tag = "auth",
     responses(
         (status = 201, description = "Anonymous account created successfully", body = AuthResponse),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
 pub async fn anonymous_auth_handler(
@@ -127,8 +128,9 @@ pub async fn anonymous_auth_handler(
     params(BoundingBox),
     responses(
         (status = 200, description = "Active hazards within bounding box", body = Vec<Hazard>),
-        (status = 400, description = "Invalid bbox query"),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 400, description = "Invalid bbox query", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
 pub async fn list_hazards_handler(
@@ -147,9 +149,12 @@ pub async fn list_hazards_handler(
     request_body = CreateHazardRequest,
     responses(
         (status = 201, description = "Hazard report created", body = Hazard),
-        (status = 400, description = "Validation failed"),
-        (status = 401, description = "Unauthorized caller"),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 400, description = "Validation failed", body = ErrorResponse),
+        (status = 401, description = "Unauthorized caller", body = ErrorResponse),
+        (status = 413, description = "Request body too large", body = ErrorResponse),
+        (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -179,10 +184,13 @@ pub async fn create_hazard_handler(
     request_body = HazardVoteRequest,
     responses(
         (status = 200, description = "Vote registered and hazard updated", body = Hazard),
-        (status = 400, description = "Invalid vote payload"),
-        (status = 401, description = "Unauthorized caller"),
-        (status = 404, description = "Hazard not found"),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 400, description = "Invalid vote payload", body = ErrorResponse),
+        (status = 401, description = "Unauthorized caller", body = ErrorResponse),
+        (status = 404, description = "Hazard not found or expired", body = ErrorResponse),
+        (status = 413, description = "Request body too large", body = ErrorResponse),
+        (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -209,8 +217,12 @@ pub async fn vote_hazard_handler(
     request_body = RouteRequest,
     responses(
         (status = 200, description = "Calculated bicycle route", body = RouteResponse),
-        (status = 400, description = "Invalid coordinates"),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 400, description = "Invalid coordinates", body = ErrorResponse),
+        (status = 413, description = "Request body too large", body = ErrorResponse),
+        (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 501, description = "Routing is not available yet", body = ErrorResponse),
+        (status = 502, description = "Routing engine failed", body = ErrorResponse)
     )
 )]
 pub async fn route_handler(
@@ -229,8 +241,10 @@ pub async fn route_handler(
     params(GeocodingQuery),
     responses(
         (status = 200, description = "Geocoding suggestions", body = Vec<GeocodingItem>),
-        (status = 400, description = "Missing or invalid query parameter"),
-        (status = 429, description = "Rate limit exceeded")
+        (status = 400, description = "Missing or invalid query parameter", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 501, description = "Address search is not available yet", body = ErrorResponse),
+        (status = 502, description = "Geocoding engine failed", body = ErrorResponse)
     )
 )]
 pub async fn geocoding_handler(
@@ -252,8 +266,8 @@ pub async fn geocoding_handler(
     params(BoundingBox),
     responses(
         (status = 200, description = "Server-sent events stream of hazards within bounding box", content_type = "text/event-stream"),
-        (status = 400, description = "Invalid bbox query"),
-        (status = 429, description = "Rate limit or concurrent connection limit exceeded")
+        (status = 400, description = "Invalid bbox query", body = ErrorResponse),
+        (status = 429, description = "Rate limit or concurrent connection limit exceeded", body = ErrorResponse)
     )
 )]
 pub async fn realtime_sse_handler(

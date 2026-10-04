@@ -7,6 +7,17 @@ use shared::{
     RouteResponse,
 };
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Client for services on the private network: bounded time, no redirects.
+fn internal_http_client() -> Result<Client, AppError> {
+    Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(2))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed to build the Valhalla HTTP client: {e}")))
+}
 
 struct ValhallaCalculatedRoute {
     geometry: GeoJsonLineString,
@@ -26,12 +37,12 @@ pub struct ValhallaRoutingService {
 }
 
 impl ValhallaRoutingService {
-    pub fn new(valhalla_url: String, hazards: Arc<dyn CorridorHazards>) -> Self {
-        Self {
-            http_client: Client::new(),
+    pub fn new(valhalla_url: String, hazards: Arc<dyn CorridorHazards>) -> Result<Self, AppError> {
+        Ok(Self {
+            http_client: internal_http_client()?,
             valhalla_url,
             hazards,
-        }
+        })
     }
 
     async fn request_valhalla_route(
@@ -46,27 +57,15 @@ impl ValhallaRoutingService {
         //   "costing_options": { "bicycle": { "bicycle_type": "Road", "use_roads": 0.2 } },
         //   "exclude_polygons": [...] (si hay polígonos)
         // }
-        let placeholder_line = GeoJsonLineString {
-            geom_type: "LineString".to_string(),
-            coordinates: vec![[0.0, 0.0], [0.001, 0.001]],
-        };
-        Ok(ValhallaCalculatedRoute {
-            geometry: placeholder_line,
-            distance_meters: 1500.0,
-            duration_seconds: 300.0,
-            ascent_meters: 15.0,
-            descent_meters: 10.0,
-            maneuvers: Vec::new(),
-        })
+        //
+        // Hasta que exista el cliente Valhalla se responde 501: devolver una ruta inventada con
+        // HTTP 200 es peor que fallar, porque un ciclista la seguiría.
+        Err(AppError::NotImplemented(
+            "Bicycle routing is not available yet".into(),
+        ))
     }
 
     pub async fn route_bicycle(&self, req: &RouteRequest) -> Result<RouteResponse, AppError> {
-        tracing::debug!(
-            origin = ?req.origin.coordinates,
-            dest = ?req.destination.coordinates,
-            "Calculating bicycle route"
-        );
-
         // 1. Solicitar ruta inicial a Valhalla sin exclusiones
         let mut route = self.request_valhalla_route(req, &[]).await?;
 

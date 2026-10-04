@@ -61,9 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wiring arquitectónico: Routing comparte la misma instancia Arc<HazardService> que implementa CorridorHazards
     let routing_service =
-        ValhallaRoutingService::new(config.valhalla_url.clone(), hazard_service.clone());
+        ValhallaRoutingService::new(config.valhalla_url.clone(), hazard_service.clone())?;
 
-    let geocoding_service = Arc::new(PhotonGeocodingService::new(config.photon_url.clone()));
+    let geocoding_service = Arc::new(PhotonGeocodingService::new(config.photon_url.clone())?);
     let rate_limiter = RateLimiter::new();
 
     let app_state = Arc::new(AppState {

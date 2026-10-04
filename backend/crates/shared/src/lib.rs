@@ -50,6 +50,9 @@ pub enum AppError {
     #[error("Rate limit exceeded: {0}")]
     RateLimited(String),
 
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
     #[error("Upstream service error: {0}")]
     Upstream(String),
 

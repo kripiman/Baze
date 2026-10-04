@@ -172,6 +172,7 @@ dependencies = [
  "futures-util",
  "geocoding",
  "hazards",
+ "http-body-util",
  "ipnet",
  "realtime",
  "routing",

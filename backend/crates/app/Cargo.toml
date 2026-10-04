@@ -47,3 +47,6 @@ tokio-stream.workspace = true
 futures-util.workspace = true
 ipnet.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true

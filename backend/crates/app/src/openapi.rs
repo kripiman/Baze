@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::http::error::ErrorResponse;
 use auth::AuthResponse;
 use serde::Serialize;
 use shared::{
@@ -70,6 +71,7 @@ impl Modify for SecurityAddon {
     ),
     components(
         schemas(
+            ErrorResponse,
             HealthResponse,
             SourceResponse,
             AuthResponse,

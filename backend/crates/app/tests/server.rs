@@ -182,3 +182,49 @@ async fn after_shutdown_new_connections_are_refused() {
 
     assert!(TcpStream::connect(addr).await.is_err());
 }
+
+#[tokio::test]
+async fn the_container_healthcheck_probe_sees_a_healthy_server() {
+    let server = start(test_config(), fast_options()).await;
+    let addr = server.addr;
+
+    let healthy = tokio::task::spawn_blocking(move || baze_app::healthcheck::probe(addr))
+        .await
+        .unwrap();
+
+    assert!(healthy);
+}
+
+#[tokio::test]
+async fn the_healthcheck_probe_fails_when_nothing_is_listening() {
+    // Bind and drop to get a port that is certainly closed.
+    let addr = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    };
+
+    let healthy = tokio::task::spawn_blocking(move || baze_app::healthcheck::probe(addr))
+        .await
+        .unwrap();
+
+    assert!(!healthy);
+}
+
+#[tokio::test]
+async fn the_healthcheck_probe_rejects_a_server_that_answers_an_error() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            use std::io::Write;
+            let _ =
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n");
+        }
+    });
+
+    let healthy = tokio::task::spawn_blocking(move || baze_app::healthcheck::probe(addr))
+        .await
+        .unwrap();
+
+    assert!(!healthy);
+}

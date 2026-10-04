@@ -13,8 +13,20 @@ use routing::ValhallaRoutingService;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `baze-server healthcheck` is what the container HEALTHCHECK runs; it must not start a server.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(if baze_app::healthcheck::probe_local() {
+            0
+        } else {
+            1
+        });
+    }
+    run()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "baze_server=info,baze_app=info,tower_http=info".into());
     tracing_subscriber::fmt().with_env_filter(env_filter).init();

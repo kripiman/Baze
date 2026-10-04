@@ -11,7 +11,7 @@ progress meter: run it with `--through N` to enforce every check up to step N.
     cargo build --manifest-path backend/Cargo.toml -p baze-app
     url="$(bash scripts/e2e/prepare-db.sh postgres://postgres:postgres@127.0.0.1:5432/postgres)"
     python3 scripts/e2e/audit_regression.py --database-url "$url"              # report only
-    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 9  # fail if a step <= 9 regressed
+    python3 scripts/e2e/audit_regression.py --database-url "$url" --through 10  # fail if a step <= 10 regressed
 
 The server needs a real database (accounts live in it): prepare-db.sh builds a disposable one the same way
 the compose stack does, with the low-privilege `baze_app` role the production backend insists on.
@@ -145,6 +145,16 @@ def forge_v1(secret):
     return f"baze_anon_{u}." + hmac.new(secret.encode(), u.bytes, hashlib.sha256).hexdigest(), u
 
 
+def mint_v2(secret, account_id):
+    """A valid v2 token for `account_id`: the harness knows the server secret, only the policy is under test."""
+    key = secret.encode()
+    key_id = hashlib.sha256(b"baze/anon-token/key-id\0" + key).digest()[0]
+    now = int(time.time())
+    payload = account_id.bytes + now.to_bytes(4, "big") + (now + 86400).to_bytes(4, "big") + bytes([key_id])
+    mac = hmac.new(key, b"baze/anon-token/v2\0" + payload, hashlib.sha256).digest()
+    return "baze_v2." + payload.hex() + "." + mac.hex()
+
+
 def bearer(token):
     return {"Authorization": f"Bearer {token}"}
 
@@ -159,6 +169,13 @@ def psql(sql):
         timeout=60,
     )
     return out.stdout.strip()
+
+
+def aged_account(minutes=1440):
+    """An account created `minutes` ago (inserted directly) and a token for it."""
+    account_id = uuid.uuid4()
+    psql(f"INSERT INTO accounts (id, created_at) VALUES ('{account_id}', now() - interval '{int(minutes)} minutes')")
+    return mint_v2(STRONG_SECRET, account_id)
 
 
 # ----------------------------------------------------------------------------- checks
@@ -389,18 +406,18 @@ def _(binary):
 @check("FUN-01", "reports and votes persist across a server restart", 9)
 def _(binary):
     with server(binary) as (port, _):
-        t1 = signup(port, "203.0.113.11")
+        t1 = aged_account()
         s, text, _ = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(t1), ip="203.0.113.11")
         if s != 201:
             return False, f"create={s}"
         hid = json.loads(text)["id"]
-        t2 = signup(port, "203.0.114.11")
+        t2 = aged_account()
         call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(t2), ip="203.0.114.11")
     # A brand new process over the same database.
     with server(binary) as (port, _):
         listing = json.loads(call(port, "GET", "/api/v1/hazards?min_lon=-70.7&min_lat=-33.5&max_lon=-70.6&max_lat=-33.4", ip="203.0.113.12")[1])
         mine = [h for h in listing if h["id"] == hid]
-        t3 = signup(port, "203.0.114.12")  # same /24 as the second voter: must not count again
+        t3 = aged_account()  # same /24 as the second voter: must not count again
         s, text, _ = call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(t3), ip="203.0.114.77")
         after = json.loads(text).get("upvotes") if s == 200 else f"http {s}"
         return bool(mine) and mine[0]["upvotes"] == 2 and after == 2, f"listed={len(mine)} upvotes={mine and mine[0]['upvotes']} after_repeat_network={after}"
@@ -424,13 +441,13 @@ def _(binary):
         psql(f"DELETE FROM hazards WHERE {where}")
 
 
-@check("FUN-01", "the purge job removes expired reports and their votes", 9)
+@check("FUN-01", "the purge job removes reports expired for more than a day, and their votes", 9)
 def _(binary):
     psql(
         "WITH a AS (INSERT INTO accounts DEFAULT VALUES RETURNING id), "
         "h AS (INSERT INTO hazards (creator_account_id, category, hazard_type, status, upvotes, downvotes, geom, created_at, expires_at) "
         "SELECT a.id, 'glass', 'warning', 'confirmed', 1, 0, ST_SetSRID(ST_MakePoint(-61.0, -11.0), 4326), "
-        "now() - interval '2 days', now() - interval '1 day' FROM a RETURNING id, creator_account_id) "
+        "now() - interval '4 days', now() - interval '3 days' FROM a RETURNING id, creator_account_id) "
         "INSERT INTO hazard_votes (hazard_id, account_id, vote_type, counts, voter_net) "
         "SELECT id, creator_account_id, 1, TRUE, decode(repeat('ab', 16), 'hex') FROM h"
     )
@@ -446,18 +463,48 @@ def _(binary):
         return before == "1" and after == "0" and orphans == "0", f"before={before} after={after} orphan_votes={orphans}"
 
 
+@check("SEC-03", "fresh accounts can neither vote nor report a road closure, established ones can", 10)
+def _(binary):
+    with server(binary) as (port, _):
+        fresh = signup(port, "203.0.113.1")
+        closure = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(fresh), ip="203.0.113.1")[0]
+        warning = call(port, "POST", "/api/v1/hazards", {"category": "glass", "location": POINT}, bearer(fresh), ip="203.0.113.1")[0]
+
+        s, text, _ = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(aged_account()), ip="203.0.113.2")
+        if s != 201:
+            return False, f"established account could not report: {s} {text[:80]}"
+        hid = json.loads(text)["id"]
+        vote_fresh = call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(signup(port, "203.0.113.3")), ip="203.0.113.3")[0]
+        vote_aged = call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(aged_account()), ip="203.0.113.4")[0]
+        return (closure, warning, vote_fresh, vote_aged) == (403, 201, 403, 200), (
+            f"fresh closure={closure} fresh warning={warning} fresh vote={vote_fresh} established vote={vote_aged}"
+        )
+
+
 @check("SEC-03", "three fresh accounts on three networks cannot confirm a blocking hazard", 10)
 def _(binary):
     with server(binary) as (port, _):
-        t1 = signup(port, "203.0.113.1")
-        s, text, _ = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(t1), ip="203.0.113.1")
+        s, text, _ = call(port, "POST", "/api/v1/hazards", {"category": "road_closed", "location": POINT}, bearer(aged_account()), ip="203.0.113.5")
         hid = json.loads(text)["id"]
-        status = None
-        for n in (2, 3):
-            t = signup(port, f"203.0.{n}.1")
-            s, text, _ = call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(t), ip=f"203.0.{n}.1")
-            status = json.loads(text).get("status") if s == 200 else f"http {s}"
-        return status != "confirmed", f"final status={status}"
+        votes = [
+            call(port, "POST", f"/api/v1/hazards/{hid}/vote", {"vote": 1}, bearer(signup(port, f"203.0.{n}.1")), ip=f"203.0.{n}.1")[0]
+            for n in (6, 7, 8)
+        ]
+        listing = json.loads(call(port, "GET", "/api/v1/hazards?min_lon=-70.7&min_lat=-33.5&max_lon=-70.6&max_lat=-33.4", ip="203.0.113.9")[1])
+        mine = [h for h in listing if h["id"] == hid]
+        ok = votes == [403, 403, 403] and bool(mine) and mine[0]["status"] == "unconfirmed" and mine[0]["upvotes"] == 1
+        return ok, f"votes={votes} status={mine and mine[0]['status']}"
+
+
+@check("SEC-03", "an account's daily report cap is enforced with 429", 10)
+def _(binary):
+    with server(binary, REPORTS_PER_ACCOUNT_PER_DAY="2") as (port, _):
+        token = aged_account()
+        codes = [
+            call(port, "POST", "/api/v1/hazards", {"category": "glass", "location": POINT}, bearer(token), ip=f"203.0.113.{20 + i}")[0]
+            for i in range(3)
+        ]
+        return codes == [201, 201, 429], f"codes={codes}"
 
 
 def main():

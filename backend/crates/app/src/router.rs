@@ -209,7 +209,8 @@ pub async fn list_hazards_handler(
         (status = 413, description = "Request body too large", body = ErrorResponse),
         (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
-        (status = 500, description = "Internal error", body = ErrorResponse)
+        (status = 500, description = "Internal error", body = ErrorResponse),
+        (status = 503, description = "The hazard store is full", body = ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])

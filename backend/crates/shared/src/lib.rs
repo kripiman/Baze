@@ -59,6 +59,9 @@ pub enum AppError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
+    #[error("Service temporarily unavailable: {0}")]
+    Unavailable(String),
+
     #[error("Upstream service error: {0}")]
     Upstream(String),
 
@@ -255,17 +258,46 @@ pub struct CreateHazardRequest {
     pub location: GeoJsonPoint,
 }
 
+/// Longest description, counted in characters (not bytes: accented text is multi-byte).
+pub const MAX_DESCRIPTION_CHARS: usize = 500;
+
+/// Characters that reorder surrounding text (Trojan Source style spoofing).
+fn is_bidi_override(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 impl CreateHazardRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         self.location.validate()?;
-        if let Some(desc) = &self.description
-            && desc.len() > 500
-        {
-            return Err(AppError::Validation(
-                "Description must not exceed 500 characters".into(),
-            ));
+        if let Some(desc) = &self.description {
+            if desc.chars().count() > MAX_DESCRIPTION_CHARS {
+                return Err(AppError::Validation(format!(
+                    "Description must not exceed {MAX_DESCRIPTION_CHARS} characters"
+                )));
+            }
+            // NUL breaks PostgreSQL text columns; other control characters have no place in a short note.
+            // A line break is the only one worth keeping.
+            if desc.chars().any(|c| c.is_control() && c != '\n') {
+                return Err(AppError::Validation(
+                    "Description must not contain control characters".into(),
+                ));
+            }
+            if desc.chars().any(is_bidi_override) {
+                return Err(AppError::Validation(
+                    "Description must not contain bidirectional text overrides".into(),
+                ));
+            }
         }
         Ok(())
+    }
+
+    /// The description as it is stored: surrounding whitespace removed, and `None` when nothing is left.
+    pub fn sanitized_description(&self) -> Option<String> {
+        self.description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned)
     }
 }
 
@@ -440,5 +472,66 @@ mod tests {
         assert!(wide.validate_max_span(0.5).is_err());
         let tall = bbox(0.0, 0.0, 0.1, 0.6);
         assert!(tall.validate_max_span(0.5).is_err());
+    }
+
+    fn report(description: Option<&str>) -> CreateHazardRequest {
+        CreateHazardRequest {
+            category: HazardCategory::Glass,
+            description: description.map(str::to_owned),
+            location: GeoJsonPoint::new(-70.65, -33.45),
+        }
+    }
+
+    #[test]
+    fn description_limit_counts_characters_not_bytes() {
+        // 500 two-byte characters are 1000 bytes and must be accepted; 501 characters must not.
+        assert!(report(Some(&"ñ".repeat(500))).validate().is_ok());
+        assert!(report(Some(&"ñ".repeat(501))).validate().is_err());
+        assert!(report(Some(&"a".repeat(500))).validate().is_ok());
+        assert!(report(Some(&"a".repeat(501))).validate().is_err());
+        // Emoji are one character but four bytes.
+        assert!(report(Some(&"🚧".repeat(500))).validate().is_ok());
+    }
+
+    #[test]
+    fn description_rejects_control_characters_but_keeps_line_breaks() {
+        for bad in [
+            "\u{0}x",
+            "a\u{1b}[31mb",
+            "tab\there",
+            "carriage\rreturn",
+            "\u{7f}",
+            "\u{85}",
+        ] {
+            assert!(report(Some(bad)).validate().is_err(), "{bad:?}");
+        }
+        assert!(report(Some("first line\nsecond line")).validate().is_ok());
+    }
+
+    #[test]
+    fn description_rejects_bidirectional_overrides() {
+        for bad in ["a\u{202e}b", "a\u{202a}b", "a\u{2066}b", "a\u{2069}b"] {
+            assert!(report(Some(bad)).validate().is_err(), "{bad:?}");
+        }
+        // Plain right-to-left text is fine: only the invisible controls are refused.
+        assert!(report(Some("שלום עולם")).validate().is_ok());
+    }
+
+    #[test]
+    fn description_is_trimmed_and_empty_becomes_none() {
+        assert_eq!(
+            report(Some("  broken glass  "))
+                .sanitized_description()
+                .as_deref(),
+            Some("broken glass")
+        );
+        assert_eq!(report(Some("   \n ")).sanitized_description(), None);
+        assert_eq!(report(Some("")).sanitized_description(), None);
+        assert_eq!(report(None).sanitized_description(), None);
+    }
+
+    #[test]
+    fn absent_description_is_valid() {
+        assert!(report(None).validate().is_ok());
     }
 }

@@ -72,6 +72,10 @@ impl From<AppError> for HttpError {
             AppError::Conflict(msg) => Self::new(StatusCode::CONFLICT, msg),
             AppError::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::NotImplemented(msg) => Self::new(StatusCode::NOT_IMPLEMENTED, msg),
+            AppError::Unavailable(msg) => Self {
+                retry_after: Some(Duration::from_secs(30)),
+                ..Self::new(StatusCode::SERVICE_UNAVAILABLE, msg)
+            },
             AppError::Upstream(detail) => Self::server_error(
                 StatusCode::BAD_GATEWAY,
                 "A backing service did not respond correctly",

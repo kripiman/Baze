@@ -314,6 +314,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The hazard store is full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         },
         "security": [

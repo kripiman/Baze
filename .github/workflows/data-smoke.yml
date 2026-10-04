@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Runs the project's own data pipeline (data/scripts) on a tiny real extract, Monaco, and then the stack with the
+# real engines on top of it. It is what proves that the images, the scripts and the clients agree; the unit tests
+# use simulated engines. Manual, weekly (upstream data and images move), and on every change to the pipeline.
+name: Data pipeline smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+  push:
+    paths:
+      - 'data/**'
+      - 'infra/photon/**'
+      - 'infra/compose.yaml'
+      - 'infra/compose.dev.yaml'
+      - 'scripts/e2e/engines_smoke.py'
+      - 'scripts/check-style.py'
+      - 'backend/crates/routing/**'
+      - 'backend/crates/geocoding/**'
+      - '.github/workflows/data-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Geofabrik's Monaco extract: about 600 KB, replaced daily.
+  MONACO_URL: https://download.geofabrik.de/europe/monaco-latest.osm.pbf
+  # Planetiler keeps Monaco-sized stand-ins for its ~1 GB data sources for its own tests; pinned to its tag.
+  PLANETILER_MONACO_SOURCES: >-
+    --water-polygons-url=https://raw.githubusercontent.com/onthegomap/planetiler/v0.10.2/planetiler-core/src/test/resources/water-polygons-split-3857.zip
+    --natural-earth-url=https://raw.githubusercontent.com/onthegomap/planetiler/v0.10.2/planetiler-core/src/test/resources/natural_earth_vector.sqlite.zip
+
+jobs:
+  tiles:
+    name: Map tiles, style and published artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download the Monaco extract (verified against Geofabrik's checksum)
+        run: OSM_EXTRACT_URL="${MONACO_URL}" bash data/scripts/01-download-extract.sh
+
+      - name: Build the PMTiles with Planetiler
+        run: |
+          PLANETILER_HEAP=1g PLANETILER_ARGS="${PLANETILER_MONACO_SOURCES}" \
+            bash data/scripts/02-build-pmtiles.sh
+
+      - name: Publish the static artifacts
+        run: bash data/scripts/05-publish-static.sh
+
+      - name: The published files are consistent
+        run: |
+          cd data/out/public
+          sha256sum -c tiles.pmtiles.sha256
+          python3 - <<'PY'
+          import hashlib, json, os
+          manifest = json.load(open("manifest.json"))
+          tiles = manifest["tiles"]
+          assert tiles["file"] == "tiles.pmtiles", tiles
+          assert tiles["bytes"] == os.path.getsize("tiles.pmtiles"), "manifest size does not match the file"
+          assert tiles["sha256"] == hashlib.sha256(open("tiles.pmtiles", "rb").read()).hexdigest(), "manifest checksum does not match"
+          assert "OpenStreetMap" in manifest["attribution"] and "OpenMapTiles" in manifest["attribution"]
+          print("manifest:", json.dumps(manifest))
+          PY
+
+      - name: The map style passes the MapLibre validator
+        run: |
+          sed 's#{{PMTILES_URL}}#file:///tmp/tiles.pmtiles#' data/styles/style.json > /tmp/style-resolved.json
+          npx --yes --package=@maplibre/maplibre-gl-style-spec@26.4.4 gl-style-validate /tmp/style-resolved.json
+          python3 scripts/check-style.py
+
+  engines:
+    name: Real Valhalla and Photon behind the backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE: docker compose -f infra/compose.yaml -f infra/compose.dev.yaml --env-file infra/.env --profile engines
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download the Monaco extract (verified against Geofabrik's checksum)
+        run: OSM_EXTRACT_URL="${MONACO_URL}" bash data/scripts/01-download-extract.sh
+
+      # Fails if any elevation tile cannot be downloaded: a flat graph is never published silently.
+      - name: Build the Valhalla graph with elevation
+        run: bash data/scripts/03-build-valhalla.sh
+
+      - name: Build the Photon index from the versioned fixture
+        run: PHOTON_IMPORT_FILE=data/fixtures/photon-monaco.jsonl bash data/scripts/04-build-photon.sh
+
+      - name: Prepare a production-mode environment with the engines enabled
+        run: |
+          mkdir -p data/out/public
+          bash scripts/gen-env.sh
+          sed -i 's/^ENVIRONMENT=.*/ENVIRONMENT=production/; s/^ENGINES_ENABLED=.*/ENGINES_ENABLED=true/' infra/.env
+          echo "GIT_COMMIT_HASH=${GITHUB_SHA}" >> infra/.env
+          grep -E '^(ENVIRONMENT|ENGINES_ENABLED|ENGINES_UID|ENGINES_GID)=' infra/.env
+
+      - name: Start the stack with the engines
+        run: ${COMPOSE} up -d --build --wait --wait-timeout 600 postgis backend valhalla photon
+
+      - name: Smoke test the real engines through the backend
+        run: |
+          pw="$(sed -n 's/^POSTGRES_PASSWORD=//p' infra/.env)"
+          python3 scripts/e2e/engines_smoke.py --backend http://127.0.0.1:8080 \
+            --psql "docker exec -i -e PGPASSWORD=${pw} baze-postgis psql -h 127.0.0.1 -U baze_user -d baze_db -X -q -t -A"
+
+      - name: The engines are reachable only from the internal network
+        run: |
+          for port in 8002 2322; do
+            if (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null; then
+              echo "port ${port} of an engine is published on the host"; exit 1
+            fi
+          done
+          echo "Valhalla and Photon publish no port"
+
+      - name: The engines run unprivileged and read-only
+        run: |
+          for c in baze-valhalla baze-photon; do
+            user="$(docker inspect --format '{{.Config.User}}' "$c")"
+            ro="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$c")"
+            caps="$(docker inspect --format '{{.HostConfig.CapDrop}}' "$c")"
+            echo "$c user=$user readonly=$ro cap_drop=$caps"
+            [ "${user%%:*}" != "0" ] && [ "${user%%:*}" != "root" ] && [ -n "$user" ] || { echo "$c runs as root"; exit 1; }
+            [ "$ro" = "true" ] || { echo "$c: root filesystem is writable"; exit 1; }
+            echo "$caps" | grep -q ALL || { echo "$c: capabilities not dropped"; exit 1; }
+          done
+
+      - name: Neither the search text nor coordinates reach any log
+        run: |
+          marker="SEARCH_TEXT_4d2e"
+          curl -fsS --max-time 20 "http://127.0.0.1:8080/api/v1/geocoding/search?q=${marker}" >/dev/null
+          curl -fsS --max-time 30 -X POST -H 'Content-Type: application/json' \
+            -d '{"origin":{"type":"Point","coordinates":[7.4276,43.7394]},"destination":{"type":"Point","coordinates":[7.4215,43.7345]}}' \
+            http://127.0.0.1:8080/api/v1/routing/route >/dev/null
+          sleep 2
+          logs="$(docker logs baze-backend 2>&1; docker logs baze-valhalla 2>&1; docker logs baze-photon 2>&1)"
+          if echo "$logs" | grep -E "${marker}|43\.7394|7\.4276|43\.7345|7\.4215"; then
+            echo "a search text or a coordinate reached a log"; exit 1
+          fi
+          echo "no search text or coordinate in the logs of the backend or the engines"
+
+      - name: Show container state on failure
+        if: failure()
+        run: |
+          ${COMPOSE} ps -a || true
+          ${COMPOSE} logs --no-color --tail 60 || true
+          ls -laR data/out/valhalla 2>/dev/null | head -40 || true
+
+      - name: Tear down
+        if: always()
+        run: ${COMPOSE} down -v || true

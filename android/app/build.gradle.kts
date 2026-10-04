@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import app.cash.licensee.UnusedAction
+
 plugins {
     id("baze.android.application")
     alias(libs.plugins.licensee)
@@ -13,6 +15,9 @@ licensee {
     allow("MIT")
     allow("BSD-2-Clause")
     allow("BSD-3-Clause")
+    // The allow-list is policy, not an inventory of what ships today: BSD-3-Clause is approved even while
+    // no release dependency uses it, so licensee's "allowed identifier is unused" notice is just noise.
+    unusedAction(UnusedAction.IGNORE)
 }
 
 // AGENTS §6.1: `./gradlew checkLicenses`. It audits what the release APK really contains.

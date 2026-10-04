@@ -5,6 +5,7 @@ package cl.baze.core.domain
 
 import cl.baze.core.model.Coordinates
 import cl.baze.core.model.Hazard
+import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -12,7 +13,7 @@ import kotlin.math.sqrt
 
 /**
  * Caso de uso en Kotlin puro para determinar la proximidad del ciclista
- * a peligros viales conocidos sin depender de librerías de Android.
+ * a peligros viales conocidos sin depender de librerías de Android ni de java.*.
  */
 class HazardProximityUseCase(
     private val alertRadiusMeters: Double = 50.0
@@ -32,10 +33,10 @@ class HazardProximityUseCase(
 
     private fun calculateHaversineDistanceMeters(c1: Coordinates, c2: Coordinates): Double {
         val earthRadius = 6371000.0 // metros
-        val dLat = Math.toRadians(c2.latitude - c1.latitude)
-        val dLon = Math.toRadians(c2.longitude - c1.longitude)
-        val lat1 = Math.toRadians(c1.latitude)
-        val lat2 = Math.toRadians(c2.latitude)
+        val dLat = (c2.latitude - c1.latitude).toRadians()
+        val dLon = (c2.longitude - c1.longitude).toRadians()
+        val lat1 = c1.latitude.toRadians()
+        val lat2 = c2.latitude.toRadians()
 
         val a = sin(dLat / 2) * sin(dLat / 2) +
                 cos(lat1) * cos(lat2) *
@@ -43,4 +44,6 @@ class HazardProximityUseCase(
         val c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return earthRadius * c
     }
+
+    private fun Double.toRadians(): Double = this * PI / 180.0
 }

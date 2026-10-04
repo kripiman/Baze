@@ -45,6 +45,7 @@ services:
       - HAZARD_DEFAULT_TTL_HOURS=${HAZARD_DEFAULT_TTL_HOURS:-24}
       - SOURCE_REPO_URL=${SOURCE_REPO_URL:-https://github.com/kripiman/Baze}
       - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-dev}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
     networks:
       - internal
     depends_on:

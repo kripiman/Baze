@@ -16,3 +16,5 @@ uuid.workspace = true
 chrono.workspace = true
 utoipa.workspace = true
 async-trait.workspace = true
+serde_repr = "0.1.21"
+ipnet.workspace = true

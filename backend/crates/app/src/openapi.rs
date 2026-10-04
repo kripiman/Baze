@@ -4,9 +4,9 @@
 use auth::AuthResponse;
 use serde::Serialize;
 use shared::{
-    CreateHazardRequest, GeoJsonBbox, GeoJsonLineString, GeoJsonPoint, GeoJsonPolygon,
-    GeocodingItem, Hazard, HazardStatus, HazardType, HazardVoteRequest, RouteManeuver, RouteRequest,
-    RouteResponse,
+    BoundingBox, CreateHazardRequest, GeoJsonLineString, GeoJsonPoint, GeoJsonPolygon,
+    GeocodingItem, GeocodingQuery, Hazard, HazardCategory, HazardStatus, HazardType,
+    HazardVoteRequest, RouteManeuver, RouteRequest, RouteResponse, Vote,
 };
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi, ToSchema};
@@ -45,6 +45,16 @@ impl Modify for SecurityAddon {
 
 #[derive(OpenApi)]
 #[openapi(
+    info(
+        title = "Baze API",
+        version = "0.1.0",
+        description = "Collaborative Bicycle Navigation REST & Realtime API",
+        contact(name = "Gabriel Piñones"),
+        license(
+            name = "AGPL-3.0-or-later",
+            url = "https://www.gnu.org/licenses/agpl-3.0.html"
+        )
+    ),
     paths(
         crate::router::health_handler,
         crate::router::source_handler,
@@ -54,6 +64,7 @@ impl Modify for SecurityAddon {
         crate::router::vote_hazard_handler,
         crate::router::route_handler,
         crate::router::geocoding_handler,
+        crate::router::realtime_sse_handler,
     ),
     components(
         schemas(
@@ -61,18 +72,21 @@ impl Modify for SecurityAddon {
             SourceResponse,
             AuthResponse,
             Hazard,
+            HazardCategory,
             HazardType,
             HazardStatus,
+            Vote,
             CreateHazardRequest,
             HazardVoteRequest,
-            GeoJsonPoint,
-            GeoJsonLineString,
-            GeoJsonPolygon,
-            GeoJsonBbox,
             RouteRequest,
             RouteResponse,
             RouteManeuver,
-            GeocodingItem
+            GeocodingItem,
+            GeocodingQuery,
+            GeoJsonPoint,
+            GeoJsonLineString,
+            GeoJsonPolygon,
+            BoundingBox,
         )
     ),
     modifiers(&SecurityAddon),
@@ -81,16 +95,8 @@ impl Modify for SecurityAddon {
         (name = "auth", description = "Anonymous account provisioning"),
         (name = "hazards", description = "Hazard reporting and voting"),
         (name = "routing", description = "Bicycle routing with confirmed hazard avoidance"),
-        (name = "geocoding", description = "Address search via Photon proxy")
-    ),
-    info(
-        title = "Baze API",
-        version = "0.1.0",
-        description = "Collaborative Bicycle Navigation REST & Realtime API",
-        license(
-            name = "AGPL-3.0-or-later",
-            url = "https://www.gnu.org/licenses/agpl-3.0.html"
-        )
+        (name = "geocoding", description = "Address search via Photon proxy"),
+        (name = "realtime", description = "Realtime SSE stream of road hazards")
     )
 )]
 pub struct ApiDoc;

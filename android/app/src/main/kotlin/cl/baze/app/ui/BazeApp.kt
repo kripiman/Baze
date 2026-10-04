@@ -80,7 +80,7 @@ fun BazeApp() {
                 ReportHazardDialog(
                     location = Coordinates(longitude = -70.65, latitude = -33.45),
                     onDismiss = { showReportDialog = false },
-                    onSubmit = { category, type, description ->
+                    onSubmit = { category, description ->
                         // TODO(verify): Conectar con ViewModel para invocar BazeApiClient.reportHazard
                         showReportDialog = false
                     }

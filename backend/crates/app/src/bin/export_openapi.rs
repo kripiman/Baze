@@ -10,26 +10,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let openapi = ApiDoc::openapi();
     let json = openapi.to_pretty_json()?;
 
-    // Intentar escribir en contracts/openapi.json
-    let target_path = Path::new("contracts/openapi.json");
-    let fallback_path = Path::new("../../contracts/openapi.json");
-
+    let target_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../contracts/openapi.json");
     if let Some(parent) = target_path.parent() {
-        if parent.exists() {
-            fs::write(target_path, &json)?;
-            println!("OpenAPI schema exported to {}", target_path.display());
-            return Ok(());
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
         }
     }
 
-    if let Some(parent) = fallback_path.parent() {
-        if parent.exists() {
-            fs::write(fallback_path, &json)?;
-            println!("OpenAPI schema exported to {}", fallback_path.display());
-            return Ok(());
-        }
-    }
-
-    println!("{}", json);
+    fs::write(&target_path, &json)?;
+    println!("OpenAPI schema exported to {}", target_path.display());
     Ok(())
 }

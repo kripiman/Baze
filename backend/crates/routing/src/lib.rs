@@ -1,33 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use async_trait::async_trait;
 use reqwest::Client;
 use shared::{
-    AppError, GeoJsonLineString, GeoJsonPolygon, HazardBlockingReader, HazardReader, RouteManeuver,
-    RouteRequest, RouteResponse, RoutingProvider,
+    AppError, CorridorHazards, GeoJsonLineString, GeoJsonPolygon, RouteManeuver, RouteRequest,
+    RouteResponse,
 };
 use std::sync::Arc;
 
-#[allow(dead_code)]
+struct ValhallaCalculatedRoute {
+    geometry: GeoJsonLineString,
+    distance_meters: f64,
+    duration_seconds: f64,
+    ascent_meters: f64,
+    descent_meters: f64,
+    maneuvers: Vec<RouteManeuver>,
+}
+
 pub struct ValhallaRoutingService {
+    #[allow(dead_code)]
     http_client: Client,
+    #[allow(dead_code)]
     valhalla_url: String,
-    blocking_reader: Arc<dyn HazardBlockingReader>,
-    hazard_reader: Arc<dyn HazardReader>,
+    hazards: Arc<dyn CorridorHazards>,
 }
 
 impl ValhallaRoutingService {
-    pub fn new(
-        valhalla_url: String,
-        blocking_reader: Arc<dyn HazardBlockingReader>,
-        hazard_reader: Arc<dyn HazardReader>,
-    ) -> Self {
+    pub fn new(valhalla_url: String, hazards: Arc<dyn CorridorHazards>) -> Self {
         Self {
             http_client: Client::new(),
             valhalla_url,
-            blocking_reader,
-            hazard_reader,
+            hazards,
         }
     }
 
@@ -35,7 +38,7 @@ impl ValhallaRoutingService {
         &self,
         _req: &RouteRequest,
         _exclude_polygons: &[GeoJsonPolygon],
-    ) -> Result<(GeoJsonLineString, f64, f64, f64, f64, Vec<RouteManeuver>), AppError> {
+    ) -> Result<ValhallaCalculatedRoute, AppError> {
         // TODO(verify): Implementar llamada HTTP POST a {valhalla_url}/route con payload:
         // {
         //   "locations": [{"lat": req.origin.lat(), "lon": req.origin.lon()}, ...],
@@ -47,13 +50,17 @@ impl ValhallaRoutingService {
             geom_type: "LineString".to_string(),
             coordinates: vec![[0.0, 0.0], [0.001, 0.001]],
         };
-        Ok((placeholder_line, 1500.0, 300.0, 15.0, 10.0, Vec::new()))
+        Ok(ValhallaCalculatedRoute {
+            geometry: placeholder_line,
+            distance_meters: 1500.0,
+            duration_seconds: 300.0,
+            ascent_meters: 15.0,
+            descent_meters: 10.0,
+            maneuvers: Vec::new(),
+        })
     }
-}
 
-#[async_trait]
-impl RoutingProvider for ValhallaRoutingService {
-    async fn route_bicycle(&self, req: &RouteRequest) -> Result<RouteResponse, AppError> {
+    pub async fn route_bicycle(&self, req: &RouteRequest) -> Result<RouteResponse, AppError> {
         tracing::debug!(
             origin = ?req.origin.coordinates,
             dest = ?req.destination.coordinates,
@@ -61,40 +68,36 @@ impl RoutingProvider for ValhallaRoutingService {
         );
 
         // 1. Solicitar ruta inicial a Valhalla sin exclusiones
-        let (initial_geometry, distance, duration, ascent, descent, maneuvers) =
-            self.request_valhalla_route(req, &[]).await?;
+        let mut route = self.request_valhalla_route(req, &[]).await?;
 
         // 2. Cruce espacial en PostGIS: buscar bloqueos confirmados a lo largo del corredor de la ruta (15 metros)
         let blocking_polygons = self
-            .blocking_reader
-            .find_blocking_polygons_along_corridor(&initial_geometry, 15.0)
+            .hazards
+            .find_blocking_polygons_along_corridor(&route.geometry, 15.0)
             .await?;
 
         // 3. Si hay bloqueos confirmados en la trayectoria, re-calcular con exclude_polygons
-        let (final_geometry, final_distance, final_duration, final_ascent, final_descent, final_maneuvers) =
-            if !blocking_polygons.is_empty() {
-                tracing::info!(
-                    count = blocking_polygons.len(),
-                    "Confirmed blocking hazards intersected: recalculating with exclude_polygons"
-                );
-                self.request_valhalla_route(req, &blocking_polygons).await?
-            } else {
-                (initial_geometry, distance, duration, ascent, descent, maneuvers)
-            };
+        if !blocking_polygons.is_empty() {
+            tracing::info!(
+                count = blocking_polygons.len(),
+                "Confirmed blocking hazards intersected: recalculating with exclude_polygons"
+            );
+            route = self.request_valhalla_route(req, &blocking_polygons).await?;
+        }
 
         // 4. Obtener peligros (warning y blocking) cercanos al corredor para alertas en el dispositivo (50 metros)
         let nearby_hazards = self
-            .hazard_reader
-            .list_hazards_near_corridor(&final_geometry, 50.0)
+            .hazards
+            .list_hazards_near_corridor(&route.geometry, 50.0)
             .await?;
 
         Ok(RouteResponse {
-            distance_meters: final_distance,
-            duration_seconds: final_duration,
-            ascent_meters: final_ascent,
-            descent_meters: final_descent,
-            geometry: final_geometry,
-            maneuvers: final_maneuvers,
+            distance_meters: route.distance_meters,
+            duration_seconds: route.duration_seconds,
+            ascent_meters: route.ascent_meters,
+            descent_meters: route.descent_meters,
+            geometry: route.geometry,
+            maneuvers: route.maneuvers,
             nearby_hazards,
         })
     }

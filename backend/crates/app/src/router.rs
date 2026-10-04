@@ -2,31 +2,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::config::AppConfig;
+use crate::http::error::{AppJson, HttpError};
+use crate::http::extract::{AuthenticatedAccount, ClientIp};
 use crate::openapi::{HealthResponse, SourceResponse};
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{
+    rate_limit_api_middleware, rate_limit_signup_middleware, RateLimiter,
+};
 use auth::{AuthResponse, AuthService};
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
 };
-use futures_util::stream::Stream;
+use futures_util::stream::{Stream, StreamExt};
 use hazards::HazardService;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use shared::{
-    AppError, CreateHazardRequest, GeoJsonBbox, GeocodingItem, GeocodingProvider, Hazard,
-    HazardNotifier, HazardReader, HazardVoteRequest, HazardWriter, RouteRequest, RouteResponse,
-    RoutingProvider,
+    BoundingBox, CreateHazardRequest, GeocodingItem, GeocodingProvider, GeocodingQuery, Hazard,
+    HazardVoteRequest, RouteRequest, RouteResponse,
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt;
+use std::{sync::Arc, time::Duration};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
@@ -34,79 +34,46 @@ use uuid::Uuid;
 pub struct AppState {
     pub config: AppConfig,
     pub auth_service: AuthService,
-    pub hazard_service: HazardService,
+    pub hazard_service: Arc<HazardService>,
     pub routing_service: ValhallaRoutingService,
     pub geocoding_service: Arc<dyn GeocodingProvider>,
     pub realtime_service: RealtimeService,
     pub rate_limiter: RateLimiter,
 }
 
-#[derive(Debug)]
-pub struct HttpError(pub AppError);
-
-impl From<AppError> for HttpError {
-    fn from(err: AppError) -> Self {
-        Self(err)
-    }
-}
-
-impl IntoResponse for HttpError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self.0 {
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
-            AppError::RateLimited(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
-            AppError::Upstream(msg) => (StatusCode::BAD_GATEWAY, msg),
-            AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-        };
-        (status, Json(serde_json::json!({ "error": message }))).into_response()
-    }
-}
-
-fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), HttpError> {
-    let client_key = if let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
-        format!("token:{}", auth)
-    } else if let Some(xff) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        format!("ip:{}", xff.split(',').next().unwrap_or(xff).trim())
-    } else if let Some(xri) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-        format!("ip:{}", xri.trim())
-    } else {
-        "ip:unknown".to_string()
-    };
-
-    if state.rate_limiter.check(&client_key).is_err() {
-        return Err(HttpError(AppError::RateLimited(
-            "Rate limit exceeded. Please retry later.".into(),
-        )));
-    }
-    Ok(())
-}
-
-fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, AppError> {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .ok_or_else(|| AppError::Unauthorized("Missing Authorization header".into()))?
-        .to_str()
-        .map_err(|_| AppError::Unauthorized("Invalid Authorization header encoding".into()))?;
-
-    auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AppError::Unauthorized("Authorization scheme must be Bearer".into()))
-}
-
 pub fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", crate::openapi::ApiDoc::openapi()))
+    let open_routes = Router::new()
         .route("/health", get(health_handler))
-        .route("/source", get(source_handler))
+        .route("/source", get(source_handler));
+
+    let auth_routes = Router::new()
         .route("/api/v1/auth/anonymous", post(anonymous_auth_handler))
-        .route("/api/v1/hazards", get(list_hazards_handler).post(create_hazard_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_signup_middleware,
+        ));
+
+    let api_routes = Router::new()
+        .route(
+            "/api/v1/hazards",
+            get(list_hazards_handler).post(create_hazard_handler),
+        )
         .route("/api/v1/hazards/{id}/vote", post(vote_hazard_handler))
         .route("/api/v1/routing/route", post(route_handler))
         .route("/api/v1/geocoding/search", get(geocoding_handler))
         .route("/api/v1/realtime/sse", get(realtime_sse_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_api_middleware,
+        ));
+
+    open_routes
+        .merge(auth_routes)
+        .merge(api_routes)
+        .merge(
+            SwaggerUi::new("/swagger-ui")
+                .url("/api-docs/openapi.json", crate::openapi::ApiDoc::openapi()),
+        )
         .with_state(state)
 }
 
@@ -115,7 +82,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     path = "/health",
     tag = "system",
     responses(
-        (status = 200, description = "Service is healthy", body = HealthResponse)
+        (status = 200, description = "System is healthy", body = HealthResponse)
     )
 )]
 pub async fn health_handler() -> Json<HealthResponse> {
@@ -130,7 +97,7 @@ pub async fn health_handler() -> Json<HealthResponse> {
     path = "/source",
     tag = "system",
     responses(
-        (status = 200, description = "Source code repository and commit info (AGPL-3.0 compliance)", body = SourceResponse)
+        (status = 200, description = "AGPLv3 source code repository and deployed commit information", body = SourceResponse)
     )
 )]
 pub async fn source_handler(State(state): State<Arc<AppState>>) -> Json<SourceResponse> {
@@ -147,50 +114,34 @@ pub async fn source_handler(State(state): State<Arc<AppState>>) -> Json<SourceRe
     tag = "auth",
     responses(
         (status = 201, description = "Anonymous account created successfully", body = AuthResponse),
-        (status = 429, description = "Rate limit exceeded"),
-        (status = 500, description = "Internal error")
+        (status = 429, description = "Rate limit exceeded")
     )
 )]
 pub async fn anonymous_auth_handler(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AuthResponse>), HttpError> {
-    check_rate_limit(&state, &headers)?;
-    let response = state.auth_service.create_anonymous_account().await?;
-    Ok((StatusCode::CREATED, Json(response)))
-}
-
-#[derive(serde::Deserialize, utoipa::IntoParams)]
-pub struct BboxQuery {
-    pub min_lon: f64,
-    pub min_lat: f64,
-    pub max_lon: f64,
-    pub max_lat: f64,
+    let auth = state.auth_service.create_anonymous_account().await?;
+    Ok((StatusCode::CREATED, Json(auth)))
 }
 
 #[utoipa::path(
     get,
     path = "/api/v1/hazards",
     tag = "hazards",
-    params(BboxQuery),
+    params(BoundingBox),
     responses(
         (status = 200, description = "Active hazards within bounding box", body = Vec<Hazard>),
-        (status = 400, description = "Invalid bbox query")
+        (status = 400, description = "Invalid bbox query"),
+        (status = 429, description = "Rate limit exceeded")
     )
 )]
 pub async fn list_hazards_handler(
     State(state): State<Arc<AppState>>,
-    Query(bbox): Query<BboxQuery>,
-) -> Result<Json<Vec<Hazard>>, HttpError> {
-    let geo_bbox = GeoJsonBbox {
-        min_lon: bbox.min_lon,
-        min_lat: bbox.min_lat,
-        max_lon: bbox.max_lon,
-        max_lat: bbox.max_lat,
-    };
-    geo_bbox.validate()?;
-    let hazards = state.hazard_service.list_active_hazards(&geo_bbox).await?;
-    Ok(Json(hazards))
+    Query(bbox): Query<BoundingBox>,
+) -> Result<AppJson<Vec<Hazard>>, HttpError> {
+    bbox.validate()?;
+    let hazards = state.hazard_service.list_active_hazards(&bbox).await?;
+    Ok(AppJson(hazards))
 }
 
 #[utoipa::path(
@@ -210,17 +161,16 @@ pub async fn list_hazards_handler(
 )]
 pub async fn create_hazard_handler(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<CreateHazardRequest>,
-) -> Result<(StatusCode, Json<Hazard>), HttpError> {
-    check_rate_limit(&state, &headers)?;
+    client_ip: ClientIp,
+    AuthenticatedAccount(account_id): AuthenticatedAccount,
+    AppJson(payload): AppJson<CreateHazardRequest>,
+) -> Result<(StatusCode, AppJson<Hazard>), HttpError> {
     payload.validate()?;
-    let token = extract_bearer_token(&headers)?;
-    let account_id = state.auth_service.validate_token(token).await?;
-
-    let hazard = state.hazard_service.create_hazard(account_id, &payload).await?;
-    let _ = state.realtime_service.broadcast_hazard(&hazard).await;
-    Ok((StatusCode::CREATED, Json(hazard)))
+    let hazard = state
+        .hazard_service
+        .create_hazard(account_id, &payload, client_ip.0)
+        .await?;
+    Ok((StatusCode::CREATED, AppJson(hazard)))
 }
 
 #[utoipa::path(
@@ -245,17 +195,15 @@ pub async fn create_hazard_handler(
 pub async fn vote_hazard_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(payload): Json<HazardVoteRequest>,
-) -> Result<Json<Hazard>, HttpError> {
-    check_rate_limit(&state, &headers)?;
-    payload.validate()?;
-    let token = extract_bearer_token(&headers)?;
-    let account_id = state.auth_service.validate_token(token).await?;
-
-    let updated = state.hazard_service.vote_hazard(id, account_id, payload.vote_type).await?;
-    let _ = state.realtime_service.broadcast_hazard(&updated).await;
-    Ok(Json(updated))
+    client_ip: ClientIp,
+    AuthenticatedAccount(account_id): AuthenticatedAccount,
+    AppJson(payload): AppJson<HazardVoteRequest>,
+) -> Result<AppJson<Hazard>, HttpError> {
+    let updated = state
+        .hazard_service
+        .vote_hazard(id, account_id, payload.vote, client_ip.0)
+        .await?;
+    Ok(AppJson(updated))
 }
 
 #[utoipa::path(
@@ -265,76 +213,67 @@ pub async fn vote_hazard_handler(
     request_body = RouteRequest,
     responses(
         (status = 200, description = "Calculated bicycle route", body = RouteResponse),
-        (status = 400, description = "Invalid coordinates")
+        (status = 400, description = "Invalid coordinates"),
+        (status = 429, description = "Rate limit exceeded")
     )
 )]
 pub async fn route_handler(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<RouteRequest>,
-) -> Result<Json<RouteResponse>, HttpError> {
+    AppJson(payload): AppJson<RouteRequest>,
+) -> Result<AppJson<RouteResponse>, HttpError> {
     payload.validate()?;
-    let response = state.routing_service.route_bicycle(&payload).await?;
-    Ok(Json(response))
-}
-
-#[derive(serde::Deserialize, utoipa::IntoParams)]
-pub struct SearchQuery {
-    pub q: String,
-    pub limit: Option<usize>,
+    let route = state.routing_service.route_bicycle(&payload).await?;
+    Ok(AppJson(route))
 }
 
 #[utoipa::path(
     get,
     path = "/api/v1/geocoding/search",
     tag = "geocoding",
-    params(SearchQuery),
+    params(GeocodingQuery),
     responses(
         (status = 200, description = "Geocoding suggestions", body = Vec<GeocodingItem>),
-        (status = 400, description = "Invalid query parameters")
+        (status = 400, description = "Missing or invalid query parameter"),
+        (status = 429, description = "Rate limit exceeded")
     )
 )]
 pub async fn geocoding_handler(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<SearchQuery>,
-) -> Result<Json<Vec<GeocodingItem>>, HttpError> {
-    let query_str = query.q.trim();
-    if query_str.is_empty() {
-        return Err(HttpError(AppError::Validation("Query 'q' cannot be empty".into())));
-    }
-    if query_str.len() > 200 {
-        return Err(HttpError(AppError::Validation(
-            "Query 'q' exceeds 200 characters limit".into(),
-        )));
-    }
-    let limit = query.limit.unwrap_or(10).clamp(1, 100);
-
-    let results = state.geocoding_service.search_address(query_str, limit).await?;
-    Ok(Json(results))
+    Query(query): Query<GeocodingQuery>,
+) -> Result<AppJson<Vec<GeocodingItem>>, HttpError> {
+    query.validate()?;
+    let results = state
+        .geocoding_service
+        .search_address(query.sanitized_query(), query.effective_limit())
+        .await?;
+    Ok(AppJson(results))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/realtime/sse",
+    tag = "realtime",
+    params(BoundingBox),
+    responses(
+        (status = 200, description = "Server-sent events stream of hazards within bounding box", content_type = "text/event-stream"),
+        (status = 400, description = "Invalid bbox query"),
+        (status = 429, description = "Rate limit or concurrent connection limit exceeded")
+    )
+)]
 pub async fn realtime_sse_handler(
     State(state): State<Arc<AppState>>,
-    Query(bbox): Query<BboxQuery>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, HttpError> {
-    let geo_bbox = GeoJsonBbox {
-        min_lon: bbox.min_lon,
-        min_lat: bbox.min_lat,
-        max_lon: bbox.max_lon,
-        max_lat: bbox.max_lat,
-    };
-    geo_bbox.validate()?;
+    client_ip: ClientIp,
+    Query(bbox): Query<BoundingBox>,
+) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, HttpError> {
+    bbox.validate()?;
 
-    let rx = state.realtime_service.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |item| {
-        if let Ok(hazard) = item {
-            if RealtimeService::is_hazard_in_bbox(&hazard, &geo_bbox) {
-                if let Ok(data) = serde_json::to_string(&hazard) {
-                    return Some(Ok(Event::default().event("hazard").data(data)));
-                }
-            }
-        }
-        None
+    let hazard_stream = state
+        .realtime_service
+        .stream_hazards(client_ip.0, bbox)?;
+
+    let event_stream = hazard_stream.map(|hazard| {
+        Event::default().event("hazard").json_data(&*hazard)
     });
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+    Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

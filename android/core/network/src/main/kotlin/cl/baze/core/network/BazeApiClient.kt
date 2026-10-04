@@ -6,6 +6,7 @@ package cl.baze.core.network
 import cl.baze.core.model.Account
 import cl.baze.core.model.BoundingBox
 import cl.baze.core.model.Coordinates
+import cl.baze.core.model.GeoJsonLineString
 import cl.baze.core.model.Hazard
 import cl.baze.core.model.Route
 import io.ktor.client.HttpClient
@@ -75,7 +76,12 @@ class BazeApiClient(
             durationSeconds = 0.0,
             ascentMeters = 0.0,
             descentMeters = 0.0,
-            points = listOf(origin, destination),
+            geometry = GeoJsonLineString(
+                coordinates = listOf(
+                    listOf(origin.longitude, origin.latitude),
+                    listOf(destination.longitude, destination.latitude)
+                )
+            ),
             maneuvers = emptyList(),
             nearbyHazards = emptyList()
         )

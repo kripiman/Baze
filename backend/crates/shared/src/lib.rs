@@ -3,10 +3,29 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::net::IpAddr;
 use thiserror::Error;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+
+pub const CLIENT_IPV4_PREFIX: u8 = 32;
+pub const CLIENT_IPV6_PREFIX: u8 = 64;
+
+/// Trunca una dirección IP a la subred de la longitud de prefijo solicitada (v4 para IPv4, v6 para IPv6).
+pub fn network_of(ip: IpAddr, v4: u8, v6: u8) -> IpNet {
+    match ip {
+        IpAddr::V4(a) => Ipv4Net::new(a, v4).expect("IPv4 prefix must be <= 32").trunc().into(),
+        IpAddr::V6(a) => Ipv6Net::new(a, v6).expect("IPv6 prefix must be <= 128").trunc().into(),
+    }
+}
+
+/// Obtiene la red canónica para políticas de cliente (rate limits y SSE): IPv4 /32 e IPv6 /64.
+pub fn client_network(ip: IpAddr) -> IpNet {
+    network_of(ip, CLIENT_IPV4_PREFIX, CLIENT_IPV6_PREFIX)
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -97,15 +116,15 @@ pub struct GeoJsonPolygon {
     pub coordinates: Vec<Vec<[f64; 2]>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct GeoJsonBbox {
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, IntoParams)]
+pub struct BoundingBox {
     pub min_lon: f64,
     pub min_lat: f64,
     pub max_lon: f64,
     pub max_lat: f64,
 }
 
-impl GeoJsonBbox {
+impl BoundingBox {
     pub fn validate(&self) -> Result<(), AppError> {
         if !self.min_lon.is_finite()
             || !self.min_lat.is_finite()
@@ -149,17 +168,43 @@ pub enum HazardType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum HazardCategory {
+    Glass,
+    Pothole,
+    Debris,
+    RoadClosed,
+    Construction,
+    Flood,
+}
+
+impl HazardCategory {
+    pub const fn hazard_type(self) -> HazardType {
+        match self {
+            Self::Glass | Self::Pothole | Self::Debris => HazardType::Warning,
+            Self::RoadClosed | Self::Construction | Self::Flood => HazardType::Blocking,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum HazardStatus {
     Unconfirmed,
     Confirmed,
     Resolved,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, ToSchema)]
+#[repr(i16)]
+pub enum Vote {
+    Up = 1,
+    Down = -1,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Hazard {
     pub id: Uuid,
-    pub creator_account_id: Uuid,
-    pub category: String,
+    pub category: HazardCategory,
     pub hazard_type: HazardType,
     pub status: HazardStatus,
     pub description: Option<String>,
@@ -172,30 +217,14 @@ pub struct Hazard {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateHazardRequest {
-    pub category: String,
-    pub hazard_type: HazardType,
+    pub category: HazardCategory,
     pub description: Option<String>,
     pub location: GeoJsonPoint,
 }
 
-pub const ALLOWED_HAZARD_CATEGORIES: &[&str] = &[
-    "glass",
-    "pothole",
-    "debris",
-    "road_closed",
-    "construction",
-    "flood",
-];
-
 impl CreateHazardRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         self.location.validate()?;
-        if !ALLOWED_HAZARD_CATEGORIES.contains(&self.category.as_str()) {
-            return Err(AppError::Validation(format!(
-                "Category '{}' is not supported. Allowed categories: {:?}",
-                self.category, ALLOWED_HAZARD_CATEGORIES
-            )));
-        }
         if let Some(ref desc) = self.description {
             if desc.len() > 500 {
                 return Err(AppError::Validation(
@@ -210,16 +239,7 @@ impl CreateHazardRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HazardVoteRequest {
     /// 1 for upvote, -1 for downvote
-    pub vote_type: i16,
-}
-
-impl HazardVoteRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if self.vote_type != 1 && self.vote_type != -1 {
-            return Err(AppError::Validation("Vote type must be 1 (upvote) or -1 (downvote)".into()));
-        }
-        Ok(())
-    }
+    pub vote: Vote,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -262,6 +282,46 @@ pub struct RouteResponse {
     pub nearby_hazards: Vec<Hazard>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, IntoParams)]
+pub struct GeocodingQuery {
+    pub q: String,
+    #[schema(minimum = 1, maximum = 100)]
+    #[param(minimum = 1, maximum = 100)]
+    pub limit: Option<usize>,
+}
+
+impl GeocodingQuery {
+    pub fn validate(&self) -> Result<(), AppError> {
+        let trimmed = self.q.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Validation(
+                "Query parameter 'q' must not be empty".into(),
+            ));
+        }
+        if trimmed.len() > 200 {
+            return Err(AppError::Validation(
+                "Query parameter 'q' must not exceed 200 characters".into(),
+            ));
+        }
+        if let Some(limit) = self.limit {
+            if !(1..=100).contains(&limit) {
+                return Err(AppError::Validation(
+                    "Limit parameter must be between 1 and 100".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn sanitized_query(&self) -> &str {
+        self.q.trim()
+    }
+
+    pub fn effective_limit(&self) -> usize {
+        self.limit.unwrap_or(10)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GeocodingItem {
     pub name: String,
@@ -272,18 +332,15 @@ pub struct GeocodingItem {
 }
 
 #[async_trait]
-pub trait HazardBlockingReader: Send + Sync {
+pub trait CorridorHazards: Send + Sync {
     /// Finds confirmed blocking hazard polygons along the route corridor buffer.
     async fn find_blocking_polygons_along_corridor(
         &self,
         corridor: &GeoJsonLineString,
         buffer_meters: f64,
     ) -> Result<Vec<GeoJsonPolygon>, AppError>;
-}
 
-#[async_trait]
-pub trait HazardReader: Send + Sync {
-    async fn list_active_hazards(&self, bbox: &GeoJsonBbox) -> Result<Vec<Hazard>, AppError>;
+    /// Lists hazards (warning and blocking) along the route corridor buffer.
     async fn list_hazards_near_corridor(
         &self,
         corridor: &GeoJsonLineString,
@@ -291,24 +348,8 @@ pub trait HazardReader: Send + Sync {
     ) -> Result<Vec<Hazard>, AppError>;
 }
 
-#[async_trait]
-pub trait HazardWriter: Send + Sync {
-    async fn create_hazard(
-        &self,
-        account_id: Uuid,
-        req: &CreateHazardRequest,
-    ) -> Result<Hazard, AppError>;
-    async fn vote_hazard(
-        &self,
-        hazard_id: Uuid,
-        account_id: Uuid,
-        vote_type: i16,
-    ) -> Result<Hazard, AppError>;
-}
-
-#[async_trait]
 pub trait HazardNotifier: Send + Sync {
-    async fn broadcast_hazard(&self, hazard: &Hazard) -> Result<(), AppError>;
+    fn broadcast_hazard(&self, hazard: &Hazard);
 }
 
 #[async_trait]
@@ -316,7 +357,20 @@ pub trait GeocodingProvider: Send + Sync {
     async fn search_address(&self, query: &str, limit: usize) -> Result<Vec<GeocodingItem>, AppError>;
 }
 
-#[async_trait]
-pub trait RoutingProvider: Send + Sync {
-    async fn route_bicycle(&self, req: &RouteRequest) -> Result<RouteResponse, AppError>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_of_and_client_network() {
+        let v4: IpAddr = "192.168.1.100".parse().unwrap();
+        assert_eq!(network_of(v4, 32, 64).to_string(), "192.168.1.100/32");
+        assert_eq!(network_of(v4, 24, 64).to_string(), "192.168.1.0/24");
+        assert_eq!(client_network(v4).to_string(), "192.168.1.100/32");
+
+        let v6: IpAddr = "2001:db8:85a3:0:1234:8a2e:370:7334".parse().unwrap();
+        assert_eq!(network_of(v6, 32, 64).to_string(), "2001:db8:85a3::/64");
+        assert_eq!(network_of(v6, 32, 48).to_string(), "2001:db8:85a3::/48");
+        assert_eq!(client_network(v6).to_string(), "2001:db8:85a3::/64");
+    }
 }

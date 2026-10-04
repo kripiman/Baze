@@ -30,8 +30,8 @@
               }
             }
           },
-          "500": {
-            "description": "Internal error"
+          "429": {
+            "description": "Rate limit exceeded"
           }
         }
       }
@@ -60,7 +60,8 @@
                 "integer",
                 "null"
               ],
-              "minimum": 0
+              "maximum": 100,
+              "minimum": 1
             }
           }
         ],
@@ -79,7 +80,10 @@
             }
           },
           "400": {
-            "description": "Invalid query parameters"
+            "description": "Missing or invalid query parameter"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
           }
         }
       }
@@ -144,6 +148,9 @@
           },
           "400": {
             "description": "Invalid bbox query"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
           }
         }
       },
@@ -164,7 +171,7 @@
         },
         "responses": {
           "201": {
-            "description": "Hazard reported",
+            "description": "Hazard report created",
             "content": {
               "application/json": {
                 "schema": {
@@ -178,6 +185,9 @@
           },
           "401": {
             "description": "Unauthorized caller"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
           }
         },
         "security": [
@@ -234,6 +244,9 @@
           },
           "404": {
             "description": "Hazard not found"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
           }
         },
         "security": [
@@ -241,6 +254,66 @@
             "bearer_auth": []
           }
         ]
+      }
+    },
+    "/api/v1/realtime/sse": {
+      "get": {
+        "tags": [
+          "realtime"
+        ],
+        "operationId": "realtime_sse_handler",
+        "parameters": [
+          {
+            "name": "min_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "min_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "max_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "max_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent events stream of hazards within bounding box",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "description": "Invalid bbox query"
+          },
+          "429": {
+            "description": "Rate limit or concurrent connection limit exceeded"
+          }
+        }
       }
     },
     "/api/v1/routing/route": {
@@ -272,6 +345,9 @@
           },
           "400": {
             "description": "Invalid coordinates"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
           }
         }
       }
@@ -284,7 +360,7 @@
         "operationId": "health_handler",
         "responses": {
           "200": {
-            "description": "Service is healthy",
+            "description": "System is healthy",
             "content": {
               "application/json": {
                 "schema": {
@@ -304,7 +380,7 @@
         "operationId": "source_handler",
         "responses": {
           "200": {
-            "description": "Source code repository and commit info (AGPL-3.0 compliance)",
+            "description": "AGPLv3 source code repository and deployed commit information",
             "content": {
               "application/json": {
                 "schema": {
@@ -340,32 +416,7 @@
           }
         }
       },
-      "CreateHazardRequest": {
-        "type": "object",
-        "required": [
-          "category",
-          "hazard_type",
-          "location"
-        ],
-        "properties": {
-          "category": {
-            "type": "string"
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "hazard_type": {
-            "$ref": "#/components/schemas/HazardType"
-          },
-          "location": {
-            "$ref": "#/components/schemas/GeoJsonPoint"
-          }
-        }
-      },
-      "GeoJsonBbox": {
+      "BoundingBox": {
         "type": "object",
         "required": [
           "min_lon",
@@ -389,6 +440,27 @@
           "min_lon": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "CreateHazardRequest": {
+        "type": "object",
+        "required": [
+          "category",
+          "location"
+        ],
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/HazardCategory"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoJsonPoint"
           }
         }
       },
@@ -494,11 +566,29 @@
           }
         }
       },
+      "GeocodingQuery": {
+        "type": "object",
+        "required": [
+          "q"
+        ],
+        "properties": {
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "maximum": 100,
+            "minimum": 1
+          },
+          "q": {
+            "type": "string"
+          }
+        }
+      },
       "Hazard": {
         "type": "object",
         "required": [
           "id",
-          "creator_account_id",
           "category",
           "hazard_type",
           "status",
@@ -510,15 +600,11 @@
         ],
         "properties": {
           "category": {
-            "type": "string"
+            "$ref": "#/components/schemas/HazardCategory"
           },
           "created_at": {
             "type": "string",
             "format": "date-time"
-          },
-          "creator_account_id": {
-            "type": "string",
-            "format": "uuid"
           },
           "description": {
             "type": [
@@ -553,6 +639,17 @@
           }
         }
       },
+      "HazardCategory": {
+        "type": "string",
+        "enum": [
+          "glass",
+          "pothole",
+          "debris",
+          "road_closed",
+          "construction",
+          "flood"
+        ]
+      },
       "HazardStatus": {
         "type": "string",
         "enum": [
@@ -571,12 +668,11 @@
       "HazardVoteRequest": {
         "type": "object",
         "required": [
-          "vote_type"
+          "vote"
         ],
         "properties": {
-          "vote_type": {
-            "type": "integer",
-            "format": "int32",
+          "vote": {
+            "$ref": "#/components/schemas/Vote",
             "description": "1 for upvote, -1 for downvote"
           }
         }
@@ -699,6 +795,13 @@
             "type": "string"
           }
         }
+      },
+      "Vote": {
+        "type": "integer",
+        "enum": [
+          1,
+          -1
+        ]
       }
     },
     "securitySchemes": {
@@ -730,6 +833,10 @@
     {
       "name": "geocoding",
       "description": "Address search via Photon proxy"
+    },
+    {
+      "name": "realtime",
+      "description": "Realtime SSE stream of road hazards"
     }
   ]
 }

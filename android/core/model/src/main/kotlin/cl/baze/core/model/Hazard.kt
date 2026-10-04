@@ -17,6 +17,33 @@ enum class HazardType {
 }
 
 @Serializable
+enum class HazardCategory {
+    @SerialName("glass")
+    GLASS,
+
+    @SerialName("pothole")
+    POTHOLE,
+
+    @SerialName("debris")
+    DEBRIS,
+
+    @SerialName("road_closed")
+    ROAD_CLOSED,
+
+    @SerialName("construction")
+    CONSTRUCTION,
+
+    @SerialName("flood")
+    FLOOD;
+
+    val hazardType: HazardType
+        get() = when (this) {
+            GLASS, POTHOLE, DEBRIS -> HazardType.WARNING
+            ROAD_CLOSED, CONSTRUCTION, FLOOD -> HazardType.BLOCKING
+        }
+}
+
+@Serializable
 enum class HazardStatus {
     @SerialName("unconfirmed")
     UNCONFIRMED,
@@ -31,16 +58,19 @@ enum class HazardStatus {
 @Serializable
 data class Hazard(
     val id: String,
-    val category: String,
-    val type: HazardType,
+    val category: HazardCategory,
+    @SerialName("hazard_type")
+    val hazardType: HazardType = category.hazardType,
     val status: HazardStatus,
     val description: String? = null,
     val upvotes: Int,
     val downvotes: Int,
     val location: Coordinates,
+    @SerialName("created_at")
     val createdAt: Instant,
+    @SerialName("expires_at")
     val expiresAt: Instant
 ) {
     val isConfirmedBlocking: Boolean
-        get() = type == HazardType.BLOCKING && status == HazardStatus.CONFIRMED
+        get() = hazardType == HazardType.BLOCKING && status == HazardStatus.CONFIRMED
 }

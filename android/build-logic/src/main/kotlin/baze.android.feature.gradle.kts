@@ -1,13 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-plugins {
-    id("com.android.library")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
-}
+import com.android.build.api.dsl.LibraryExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension
 
-extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+// See baze.android.application for why plugins are applied from the body.
+pluginManager.apply("com.android.library")
+pluginManager.apply("org.jetbrains.kotlin.android")
+pluginManager.apply("org.jetbrains.kotlin.plugin.compose")
+
+extensions.configure<LibraryExtension> {
+    // :feature:map -> cl.baze.feature.map, which is the package of its sources.
+    namespace = "cl.baze." + project.path.removePrefix(":").replace(":", ".")
     compileSdk = 35
 
     defaultConfig {
@@ -23,4 +28,8 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     buildFeatures {
         compose = true
     }
+}
+
+extensions.configure<KotlinAndroidProjectExtension> {
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
 }

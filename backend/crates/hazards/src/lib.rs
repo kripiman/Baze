@@ -16,6 +16,11 @@ use uuid::Uuid;
 /// A listing never returns more than this many reports (newest first).
 pub const MAX_LIST_RESULTS: usize = 500;
 
+/// Reports held in memory at once. About 3 KiB each, so this bounds the store to a few tens of MiB.
+/// The relational store replaces it; until then a full table refuses new reports rather than the
+/// process running out of memory.
+pub const MAX_STORED_HAZARDS: usize = 20_000;
+
 /// Representa la subred evaluada para la legitimidad del voto (/24 para IPv4, /64 para IPv6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct VoterNetwork(IpNet);
@@ -76,7 +81,11 @@ impl HazardRecord {
 
         self.hazard.upvotes = up;
         self.hazard.downvotes = down;
-        self.hazard.status = evaluate_hazard_status(self.hazard.hazard_type, up, down, threshold);
+        // Once the community has retired a report it stays retired, even if votes are flipped later.
+        if self.hazard.status != HazardStatus::Resolved {
+            self.hazard.status =
+                evaluate_hazard_status(self.hazard.hazard_type, up, down, threshold);
+        }
         &self.hazard
     }
 }
@@ -91,23 +100,26 @@ pub struct HazardService {
     notifier: Arc<dyn HazardNotifier>,
 }
 
-/// Función pura para determinar el estado de confirmación de un reporte según sus votos y umbral.
+/// Función pura para determinar el estado de un reporte según sus votos contabilizados y el umbral.
+///
+/// - Si los votos en contra superan a los favorables por el umbral, la comunidad lo retira (`Resolved`),
+///   sea aviso o bloqueo.
+/// - Un aviso (`Warning`) nace confirmado: solo alerta, no afecta rutas.
+/// - Un bloqueo (`Blocking`) necesita que los votos favorables superen a los contrarios por el umbral.
 pub fn evaluate_hazard_status(
     hazard_type: HazardType,
     upvotes: i32,
     downvotes: i32,
     confirmation_threshold: i32,
 ) -> HazardStatus {
+    let balance = upvotes - downvotes;
+    if -balance >= confirmation_threshold {
+        return HazardStatus::Resolved;
+    }
     match hazard_type {
         HazardType::Warning => HazardStatus::Confirmed,
-        HazardType::Blocking => {
-            let balance = upvotes - downvotes;
-            if balance >= confirmation_threshold {
-                HazardStatus::Confirmed
-            } else {
-                HazardStatus::Unconfirmed
-            }
-        }
+        HazardType::Blocking if balance >= confirmation_threshold => HazardStatus::Confirmed,
+        HazardType::Blocking => HazardStatus::Unconfirmed,
     }
 }
 
@@ -137,12 +149,24 @@ impl HazardService {
         let expires_at = now + Duration::hours(self.default_ttl_hours);
         let hazard_type = req.category.hazard_type();
 
+        if self
+            .records
+            .read()
+            .map_err(|_| AppError::Internal("Lock poisoned".into()))?
+            .len()
+            >= MAX_STORED_HAZARDS
+        {
+            return Err(AppError::Unavailable(
+                "The hazard store is full. Please retry later.".into(),
+            ));
+        }
+
         let initial_hazard = Hazard {
             id: Uuid::new_v4(),
             category: req.category,
             hazard_type,
             status: HazardStatus::Unconfirmed,
-            description: req.description.clone(),
+            description: req.sanitized_description(),
             upvotes: 0,
             downvotes: 0,
             location: req.location.clone(),
@@ -192,10 +216,16 @@ impl HazardService {
                 .get_mut(&hazard_id)
                 .ok_or_else(|| AppError::NotFound(format!("Hazard {} not found", hazard_id)))?;
 
-            // Validar expiración (devuelve NotFound)
+            // Un reporte caducado o ya retirado por la comunidad deja de existir para los votantes.
             if record.hazard.expires_at <= now {
                 return Err(AppError::NotFound(format!(
                     "Hazard {} has expired",
+                    hazard_id
+                )));
+            }
+            if record.hazard.status == HazardStatus::Resolved {
+                return Err(AppError::NotFound(format!(
+                    "Hazard {} has been resolved",
                     hazard_id
                 )));
             }
@@ -225,7 +255,11 @@ impl HazardService {
         let mut active: Vec<Hazard> = records
             .values()
             .map(|r| &r.hazard)
-            .filter(|h| h.expires_at > now && bbox.contains_point(&h.location))
+            .filter(|h| {
+                h.expires_at > now
+                    && h.status != HazardStatus::Resolved
+                    && bbox.contains_point(&h.location)
+            })
             .cloned()
             .collect();
         active.sort_unstable_by_key(|h| std::cmp::Reverse(h.created_at));
@@ -309,6 +343,49 @@ mod tests {
             evaluate_hazard_status(HazardType::Blocking, 1, 0, 1),
             HazardStatus::Confirmed
         );
+    }
+
+    #[test]
+    fn test_evaluate_hazard_status_resolved_needs_the_threshold_against() {
+        // Not enough against yet: net -2 with threshold 3.
+        assert_eq!(
+            evaluate_hazard_status(HazardType::Warning, 1, 3, 3),
+            HazardStatus::Confirmed
+        );
+        assert_eq!(
+            evaluate_hazard_status(HazardType::Blocking, 1, 3, 3),
+            HazardStatus::Unconfirmed
+        );
+        // Net -3 retires either kind of report.
+        assert_eq!(
+            evaluate_hazard_status(HazardType::Warning, 0, 3, 3),
+            HazardStatus::Resolved
+        );
+        assert_eq!(
+            evaluate_hazard_status(HazardType::Blocking, 1, 4, 3),
+            HazardStatus::Resolved
+        );
+    }
+
+    #[test]
+    fn test_evaluate_hazard_status_never_contradicts_itself() {
+        for up in 0..30 {
+            for down in 0..30 {
+                for threshold in 2..8 {
+                    let blocking =
+                        evaluate_hazard_status(HazardType::Blocking, up, down, threshold);
+                    let warning = evaluate_hazard_status(HazardType::Warning, up, down, threshold);
+                    // Both kinds are retired by exactly the same evidence.
+                    assert_eq!(
+                        blocking == HazardStatus::Resolved,
+                        warning == HazardStatus::Resolved
+                    );
+                    if blocking == HazardStatus::Confirmed {
+                        assert!(up - down >= threshold);
+                    }
+                }
+            }
+        }
     }
 
     fn ip(s: &str) -> IpAddr {
@@ -722,5 +799,174 @@ mod tests {
                 .windows(2)
                 .all(|w| w[0].created_at >= w[1].created_at)
         );
+    }
+
+    fn blocking_report() -> CreateHazardRequest {
+        CreateHazardRequest {
+            category: HazardCategory::RoadClosed,
+            description: None,
+            location: GeoJsonPoint::new(-70.65, -33.45),
+        }
+    }
+
+    fn city_bbox() -> BoundingBox {
+        BoundingBox {
+            min_lon: -70.7,
+            min_lat: -33.5,
+            max_lon: -70.6,
+            max_lat: -33.4,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_community_downvotes_retire_a_hazard() {
+        let service = setup_service(3);
+        let hazard = service
+            .create_hazard(Uuid::new_v4(), &blocking_report(), ip("10.1.0.1"))
+            .await
+            .unwrap();
+
+        // The creator's own vote is 1 up. Three independent downvotes leave net -2: still listed.
+        for subnet in 2..=4 {
+            let updated = service
+                .vote_hazard(
+                    hazard.id,
+                    Uuid::new_v4(),
+                    Vote::Down,
+                    ip(&format!("10.{subnet}.0.1")),
+                )
+                .await
+                .unwrap();
+            assert_ne!(updated.status, HazardStatus::Resolved, "subnet {subnet}");
+        }
+        assert_eq!(
+            service
+                .list_active_hazards(&city_bbox())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // The fourth makes net -3: the report is retired and disappears from listings.
+        let retired = service
+            .vote_hazard(hazard.id, Uuid::new_v4(), Vote::Down, ip("10.5.0.1"))
+            .await
+            .unwrap();
+        assert_eq!(retired.status, HazardStatus::Resolved);
+        assert!(
+            service
+                .list_active_hazards(&city_bbox())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolved_hazard_no_longer_accepts_votes() {
+        let service = setup_service(3);
+        let hazard = service
+            .create_hazard(Uuid::new_v4(), &blocking_report(), ip("10.1.0.1"))
+            .await
+            .unwrap();
+        for subnet in 2..=5 {
+            service
+                .vote_hazard(
+                    hazard.id,
+                    Uuid::new_v4(),
+                    Vote::Down,
+                    ip(&format!("10.{subnet}.0.1")),
+                )
+                .await
+                .unwrap();
+        }
+
+        let err = service
+            .vote_hazard(hazard.id, Uuid::new_v4(), Vote::Up, ip("10.9.0.1"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_a_warning_can_be_retired_too() {
+        let service = setup_service(2);
+        let req = CreateHazardRequest {
+            category: HazardCategory::Glass,
+            description: None,
+            location: GeoJsonPoint::new(-70.65, -33.45),
+        };
+        let hazard = service
+            .create_hazard(Uuid::new_v4(), &req, ip("10.1.0.1"))
+            .await
+            .unwrap();
+        assert_eq!(hazard.status, HazardStatus::Confirmed);
+
+        // net: 1 up, then 3 down = -2 >= threshold 2
+        let mut last = hazard;
+        for subnet in 2..=4 {
+            last = service
+                .vote_hazard(
+                    last.id,
+                    Uuid::new_v4(),
+                    Vote::Down,
+                    ip(&format!("10.{subnet}.0.1")),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(last.status, HazardStatus::Resolved);
+    }
+
+    #[tokio::test]
+    async fn test_description_is_stored_trimmed() {
+        let service = setup_service(3);
+        let req = CreateHazardRequest {
+            category: HazardCategory::Glass,
+            description: Some("  broken glass  ".into()),
+            location: GeoJsonPoint::new(-70.65, -33.45),
+        };
+        let hazard = service
+            .create_hazard(Uuid::new_v4(), &req, ip("10.1.0.1"))
+            .await
+            .unwrap();
+        assert_eq!(hazard.description.as_deref(), Some("broken glass"));
+
+        let blank = CreateHazardRequest {
+            description: Some("   ".into()),
+            ..req
+        };
+        let hazard = service
+            .create_hazard(Uuid::new_v4(), &blank, ip("10.1.0.1"))
+            .await
+            .unwrap();
+        assert_eq!(hazard.description, None);
+    }
+
+    #[tokio::test]
+    async fn test_a_full_store_refuses_new_reports_but_keeps_serving_existing_ones() {
+        let service = setup_service(3);
+        let mut first = None;
+        for _ in 0..MAX_STORED_HAZARDS {
+            let hazard = service
+                .create_hazard(Uuid::new_v4(), &blocking_report(), ip("10.1.0.1"))
+                .await
+                .unwrap();
+            first.get_or_insert(hazard.id);
+        }
+
+        let err = service
+            .create_hazard(Uuid::new_v4(), &blocking_report(), ip("10.1.0.1"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unavailable(_)), "{err:?}");
+
+        // Votes on what is already stored still work.
+        service
+            .vote_hazard(first.unwrap(), Uuid::new_v4(), Vote::Up, ip("10.2.0.1"))
+            .await
+            .unwrap();
     }
 }

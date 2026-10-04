@@ -11,6 +11,12 @@ use thiserror::Error;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+/// Widest bounding box (degrees per side) a client may request when listing hazards (~55 km).
+pub const MAX_LIST_BBOX_SPAN_DEGREES: f64 = 0.5;
+/// Widest bounding box (degrees per side) for the realtime stream: it follows a whole route (~220 km).
+pub const MAX_STREAM_BBOX_SPAN_DEGREES: f64 = 2.0;
+const _: () = assert!(MAX_STREAM_BBOX_SPAN_DEGREES > MAX_LIST_BBOX_SPAN_DEGREES);
+
 pub const CLIENT_IPV4_PREFIX: u8 = 32;
 pub const CLIENT_IPV6_PREFIX: u8 = 64;
 
@@ -165,6 +171,16 @@ impl BoundingBox {
             return Err(AppError::Validation(
                 "min_lat must be strictly less than max_lat".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// Rejects boxes wider than `max_degrees` on either side, so one request cannot ask for the whole world.
+    pub fn validate_max_span(&self, max_degrees: f64) -> Result<(), AppError> {
+        if self.max_lon - self.min_lon > max_degrees || self.max_lat - self.min_lat > max_degrees {
+            return Err(AppError::Validation(format!(
+                "Bounding box too large: at most {max_degrees} degrees per side"
+            )));
         }
         Ok(())
     }
@@ -393,5 +409,36 @@ mod tests {
         assert_eq!(network_of(v6, 32, 64).to_string(), "2001:db8:85a3::/64");
         assert_eq!(network_of(v6, 32, 48).to_string(), "2001:db8:85a3::/48");
         assert_eq!(client_network(v6).to_string(), "2001:db8:85a3::/64");
+    }
+
+    fn bbox(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> BoundingBox {
+        BoundingBox {
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+        }
+    }
+
+    #[test]
+    fn bbox_span_within_limit_is_accepted() {
+        let city = bbox(-70.7, -33.5, -70.5, -33.3);
+        assert!(city.validate_max_span(MAX_LIST_BBOX_SPAN_DEGREES).is_ok());
+        let edge = bbox(0.0, 0.0, 0.5, 0.5);
+        assert!(edge.validate_max_span(0.5).is_ok());
+    }
+
+    #[test]
+    fn bbox_span_over_limit_is_rejected_on_either_axis() {
+        let world = bbox(-180.0, -90.0, 180.0, 90.0);
+        assert!(
+            world
+                .validate_max_span(MAX_STREAM_BBOX_SPAN_DEGREES)
+                .is_err()
+        );
+        let wide = bbox(0.0, 0.0, 0.6, 0.1);
+        assert!(wide.validate_max_span(0.5).is_err());
+        let tall = bbox(0.0, 0.0, 0.1, 0.6);
+        assert!(tall.validate_max_span(0.5).is_err());
     }
 }

@@ -44,6 +44,10 @@ pub struct AppConfig {
     pub source_repo_url: String,
     pub git_commit_hash: String,
     pub trusted_proxies: Vec<IpNet>,
+    /// Whether Swagger UI and `/api-docs/openapi.json` are served.
+    pub enable_api_docs: bool,
+    pub request_timeout_secs: u64,
+    pub max_concurrent_requests: usize,
 }
 
 fn lookup_trimmed<F: Fn(&str) -> Option<String>>(lookup: &F, key: &str) -> Option<String> {
@@ -289,6 +293,20 @@ impl AppConfig {
             trusted_proxies.push(net);
         }
 
+        // The contract lives in contracts/openapi.json; serving the UI in production only widens the surface.
+        let enable_api_docs = parse_lookup_var(&lookup, "ENABLE_API_DOCS", is_dev)?;
+
+        let request_timeout_secs = parse_lookup_var(&lookup, "REQUEST_TIMEOUT_SECONDS", 15u64)?;
+        if !(1..=120).contains(&request_timeout_secs) {
+            return Err("REQUEST_TIMEOUT_SECONDS must be between 1 and 120".into());
+        }
+
+        let max_concurrent_requests =
+            parse_lookup_var(&lookup, "MAX_CONCURRENT_REQUESTS", 512usize)?;
+        if !(1..=100_000).contains(&max_concurrent_requests) {
+            return Err("MAX_CONCURRENT_REQUESTS must be between 1 and 100000".into());
+        }
+
         Ok(Self {
             environment,
             host,
@@ -303,6 +321,9 @@ impl AppConfig {
             source_repo_url,
             git_commit_hash,
             trusted_proxies,
+            enable_api_docs,
+            request_timeout_secs,
+            max_concurrent_requests,
         })
     }
 
@@ -693,5 +714,38 @@ mod tests {
         let err = AppConfig::from_lookup(prod_vars(&[("DATABASE_URL", "not-a-connection-string")]))
             .unwrap_err();
         assert!(err.contains("DATABASE_URL"), "{err}");
+    }
+
+    #[test]
+    fn api_docs_are_off_in_production_and_on_in_development_by_default() {
+        let prod = AppConfig::from_lookup(prod_vars(&[])).unwrap();
+        assert!(!prod.enable_api_docs);
+        let dev = AppConfig::from_lookup(mock_env(&[("ENVIRONMENT", "development")])).unwrap();
+        assert!(dev.enable_api_docs);
+    }
+
+    #[test]
+    fn api_docs_can_be_switched_explicitly() {
+        let on = AppConfig::from_lookup(prod_vars(&[("ENABLE_API_DOCS", "true")])).unwrap();
+        assert!(on.enable_api_docs);
+        let err = AppConfig::from_lookup(prod_vars(&[("ENABLE_API_DOCS", "maybe")])).unwrap_err();
+        assert!(err.contains("ENABLE_API_DOCS"), "{err}");
+    }
+
+    #[test]
+    fn server_limits_have_safe_defaults_and_bounds() {
+        let config = AppConfig::from_lookup(prod_vars(&[])).unwrap();
+        assert_eq!(config.request_timeout_secs, 15);
+        assert_eq!(config.max_concurrent_requests, 512);
+
+        for (key, value) in [
+            ("REQUEST_TIMEOUT_SECONDS", "0"),
+            ("REQUEST_TIMEOUT_SECONDS", "121"),
+            ("MAX_CONCURRENT_REQUESTS", "0"),
+            ("MAX_CONCURRENT_REQUESTS", "100001"),
+        ] {
+            let err = AppConfig::from_lookup(prod_vars(&[(key, value)])).expect_err(value);
+            assert!(err.contains(key), "{err}");
+        }
     }
 }

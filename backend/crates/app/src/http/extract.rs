@@ -52,6 +52,14 @@ where
     }
 }
 
+/// The credentials of an `Authorization: Bearer <token>` header. The scheme is case-insensitive
+/// (RFC 9110 section 11.1) and may be followed by extra spaces; the token itself is untouched.
+fn bearer_token(header_value: &str) -> Option<&str> {
+    let (scheme, token) = header_value.split_once(' ')?;
+    let token = token.trim_start_matches(' ');
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+}
+
 /// Extractor de cuenta anónima autenticada por token Bearer HMAC.
 /// Aplica límite por cuenta para operaciones de mutación.
 pub struct AuthenticatedAccount(pub Uuid);
@@ -81,7 +89,7 @@ where
                 ))
             })?;
 
-        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        let token = bearer_token(auth_header).ok_or_else(|| {
             HttpError::from(AppError::Unauthorized(
                 "Authorization scheme must be Bearer".into(),
             ))
@@ -94,15 +102,54 @@ where
             .map_err(HttpError::from)?;
 
         // Límite de mutaciones por cuenta
-        if !state
+        state
             .rate_limiter
-            .check(&ACCOUNT_MUTATION_BUDGET, &account_id.to_string())
-        {
-            return Err(HttpError::from(AppError::RateLimited(
-                "Account mutation rate limit exceeded. Please retry later.".into(),
-            )));
-        }
+            .check_with_retry(&ACCOUNT_MUTATION_BUDGET, &account_id.to_string())
+            .map_err(|retry_after| {
+                HttpError::rate_limited(
+                    "Account mutation rate limit exceeded. Please retry later.",
+                    retry_after,
+                )
+            })?;
 
         Ok(AuthenticatedAccount(account_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bearer_token;
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        for header in [
+            "Bearer abc",
+            "bearer abc",
+            "BEARER abc",
+            "BeArEr abc",
+            "Bearer   abc",
+        ] {
+            assert_eq!(bearer_token(header), Some("abc"), "{header}");
+        }
+    }
+
+    #[test]
+    fn other_schemes_and_empty_tokens_are_rejected() {
+        for header in [
+            "Basic abc",
+            "Bearerabc",
+            "abc",
+            "",
+            "Bearer",
+            "Bearer ",
+            "Token abc",
+        ] {
+            assert_eq!(bearer_token(header), None, "{header}");
+        }
+    }
+
+    #[test]
+    fn the_token_is_not_altered() {
+        assert_eq!(bearer_token("Bearer baze_anon_X.Y"), Some("baze_anon_X.Y"));
     }
 }

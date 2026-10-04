@@ -40,7 +40,7 @@ utoipa = { version = "5.3", features = ["axum_extras", "chrono", "uuid", "repr"]
 utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
 uuid = { version = "1.14", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -56,3 +56,6 @@ hex = "0.4"
 ipnet = "2.12"
 url = "2.5"
 http-body-util = "0.1"
+# Direct hyper server so the accept loop can set a header read timeout (axum::serve cannot).
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "server-graceful", "service"] }

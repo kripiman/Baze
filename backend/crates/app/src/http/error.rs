@@ -3,11 +3,12 @@
 
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use shared::AppError;
+use std::time::Duration;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -26,6 +27,8 @@ pub struct HttpError {
     pub status: StatusCode,
     pub message: String,
     pub error_id: Option<Uuid>,
+    /// Sent as the `Retry-After` header (whole seconds, rounded up).
+    pub retry_after: Option<Duration>,
 }
 
 impl HttpError {
@@ -34,6 +37,15 @@ impl HttpError {
             status,
             message: message.into(),
             error_id: None,
+            retry_after: None,
+        }
+    }
+
+    /// 429 telling the client when its budget is available again.
+    pub fn rate_limited(message: impl Into<String>, retry_after: Duration) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(StatusCode::TOO_MANY_REQUESTS, message)
         }
     }
 
@@ -46,6 +58,7 @@ impl HttpError {
             status,
             message: public_message.to_string(),
             error_id: Some(error_id),
+            retry_after: None,
         }
     }
 }
@@ -92,14 +105,21 @@ impl From<axum::extract::rejection::QueryRejection> for HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorResponse {
                 error: self.message,
                 error_id: self.error_id,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(wait) = self.retry_after {
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            if let Ok(value) = HeaderValue::from_str(&seconds.max(1).to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 
@@ -195,5 +215,22 @@ mod tests {
             assert!(json.get("error_id").is_none(), "{json}");
             assert!(json["error"].is_string());
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limited_responses_carry_retry_after_rounded_up() {
+        let response =
+            HttpError::rate_limited("slow down", Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "2");
+
+        let exact = HttpError::rate_limited("x", Duration::from_secs(30)).into_response();
+        assert_eq!(exact.headers().get(header::RETRY_AFTER).unwrap(), "30");
+    }
+
+    #[tokio::test]
+    async fn plain_429_without_a_wait_has_no_retry_after() {
+        let response = HttpError::from(AppError::RateLimited("busy".into())).into_response();
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
     }
 }

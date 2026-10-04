@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use ipnet::IpNet;
+use sqlx::postgres::PgConnectOptions;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::IpAddr;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
@@ -70,6 +73,102 @@ where
     }
 }
 
+/// Fragments that betray a value copied from documentation or a template.
+const WEAK_SECRET_MARKERS: &[&str] = &[
+    "change_me",
+    "changeme",
+    "replace",
+    "example",
+    "placeholder",
+    "secret",
+    "password",
+    "dev_insecure",
+    "default",
+];
+const MIN_SECRET_BYTES: usize = 32;
+const MIN_DISTINCT_CHARS: usize = 10;
+const MIN_ENTROPY_BITS_PER_CHAR: f64 = 3.0;
+
+fn shannon_entropy_bits_per_char(value: &str) -> f64 {
+    let mut counts: HashMap<char, usize> = HashMap::new();
+    let mut total = 0usize;
+    for c in value.chars() {
+        *counts.entry(c).or_insert(0) += 1;
+        total += 1;
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    counts
+        .values()
+        .map(|&n| {
+            let p = n as f64 / total as f64;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// True when the value is one short pattern repeated (`abab…`, `0123456789` ×6).
+fn is_repeating_pattern(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=bytes.len() / 2).any(|period| {
+        let chunks = bytes.chunks_exact(period);
+        chunks.remainder().is_empty() && chunks.clone().all(|chunk| chunk == &bytes[..period])
+    })
+}
+
+/// Why a signing secret must not be used in production, or `None` if it looks like random key material.
+fn jwt_secret_weakness(secret: &str) -> Option<String> {
+    if secret.len() < MIN_SECRET_BYTES {
+        return Some(format!("it is shorter than {MIN_SECRET_BYTES} bytes"));
+    }
+    let lowered = secret.to_ascii_lowercase();
+    if let Some(marker) = WEAK_SECRET_MARKERS.iter().find(|m| lowered.contains(**m)) {
+        return Some(format!("it contains the placeholder marker '{marker}'"));
+    }
+    if secret.chars().collect::<HashSet<_>>().len() < MIN_DISTINCT_CHARS {
+        return Some(format!(
+            "it uses fewer than {MIN_DISTINCT_CHARS} distinct characters"
+        ));
+    }
+    if is_repeating_pattern(secret) {
+        return Some("it is a short pattern repeated over and over".to_string());
+    }
+    if shannon_entropy_bits_per_char(secret) < MIN_ENTROPY_BITS_PER_CHAR {
+        return Some("its entropy is too low".to_string());
+    }
+    None
+}
+
+/// A full or abbreviated lowercase hex git commit hash (7 to 40 characters).
+fn is_commit_hash(value: &str) -> bool {
+    (7..=40).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Backend-internal endpoints are reached over the private Docker network: plain `http`, a host,
+/// and nothing else (no credentials, query string or fragment that could be smuggled in).
+fn validate_internal_http_url(name: &str, value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|e| format!("{name} is not a valid URL: {e}"))?;
+    if url.scheme() != "http" {
+        return Err(format!("{name} must use the http scheme"));
+    }
+    if url.host_str().is_none() {
+        return Err(format!("{name} must include a host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!("{name} must not embed credentials"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "{name} must not contain a query string or fragment"
+        ));
+    }
+    Ok(())
+}
+
 impl AppConfig {
     pub fn from_env() -> Result<Self, String> {
         Self::from_lookup(|k| env::var(k).ok())
@@ -105,6 +204,9 @@ impl AppConfig {
                             .into(),
                     );
                 }
+                if is_prod && PgConnectOptions::from_str(&url).is_err() {
+                    return Err("DATABASE_URL is not a valid PostgreSQL connection string".into());
+                }
                 url
             }
             None => {
@@ -117,11 +219,10 @@ impl AppConfig {
 
         let jwt_secret = match lookup_trimmed(&lookup, "JWT_SECRET") {
             Some(secret) => {
-                if is_prod && (secret.contains("dev_insecure") || secret.len() < 32) {
-                    return Err(
-                        "JWT_SECRET in production must be a secure random secret of at least 32 bytes"
-                            .into(),
-                    );
+                if is_prod && let Some(reason) = jwt_secret_weakness(&secret) {
+                    return Err(format!(
+                        "JWT_SECRET in production must be a secure random secret of at least 32 bytes (rejected: {reason}). Generate one with `openssl rand -hex 32`"
+                    ));
                 }
                 secret
             }
@@ -137,16 +238,19 @@ impl AppConfig {
             .unwrap_or_else(|| "http://localhost:8002".to_string());
         let photon_url = lookup_trimmed(&lookup, "PHOTON_URL")
             .unwrap_or_else(|| "http://localhost:2322".to_string());
+        validate_internal_http_url("VALHALLA_URL", &valhalla_url)?;
+        validate_internal_http_url("PHOTON_URL", &photon_url)?;
 
         let rate_limit_rpm = parse_lookup_var(&lookup, "RATE_LIMIT_REQUESTS_PER_MINUTE", 60u64)?;
-        if rate_limit_rpm == 0 {
-            return Err("RATE_LIMIT_REQUESTS_PER_MINUTE must be at least 1".into());
+        if !(1..=10_000).contains(&rate_limit_rpm) {
+            return Err("RATE_LIMIT_REQUESTS_PER_MINUTE must be between 1 and 10000".into());
         }
 
         let confirmation_threshold =
             parse_lookup_var(&lookup, "HAZARD_CONFIRMATION_THRESHOLD", 3i32)?;
-        if confirmation_threshold < 1 {
-            return Err("HAZARD_CONFIRMATION_THRESHOLD must be at least 1".into());
+        // A threshold of 1 would let the reporter alone confirm a blocking hazard.
+        if !(2..=50).contains(&confirmation_threshold) {
+            return Err("HAZARD_CONFIRMATION_THRESHOLD must be between 2 and 50".into());
         }
 
         let default_ttl_hours = parse_lookup_var(&lookup, "HAZARD_DEFAULT_TTL_HOURS", 24i64)?;
@@ -158,8 +262,18 @@ impl AppConfig {
 
         let source_repo_url = lookup_trimmed(&lookup, "SOURCE_REPO_URL")
             .unwrap_or_else(|| "https://github.com/kripiman/Baze".to_string());
+        if !source_repo_url.starts_with("https://") {
+            return Err("SOURCE_REPO_URL must be an https URL".into());
+        }
+        // AGPL section 13: /source must point at the code that is actually deployed.
         let git_commit_hash =
             lookup_trimmed(&lookup, "GIT_COMMIT_HASH").unwrap_or_else(|| "dev".to_string());
+        if is_prod && !is_commit_hash(&git_commit_hash) {
+            return Err(
+                "GIT_COMMIT_HASH in production must be the lowercase hex commit hash the image was built from (7 to 40 characters)"
+                    .into(),
+            );
+        }
         let trusted_proxies_str = lookup_trimmed(&lookup, "TRUSTED_PROXIES")
             .unwrap_or_else(|| "127.0.0.1,::1,172.16.0.0/12".to_string());
         let mut trusted_proxies = Vec::new();
@@ -204,6 +318,26 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STRONG_SECRET: &str = "9f3c7d1e5a2b8c4d6e0f1a3b5c7d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d";
+    const GOOD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const REAL_DB: &str = "postgres://baze_app:Zq8xV2nL5mT9wR3kJ7pD@db:5432/baze_db";
+
+    /// Minimal valid production environment; each test overrides what it wants to break.
+    fn prod_vars<'a>(extra: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            if let Some((_, v)) = extra.iter().find(|(k, _)| *k == key) {
+                return Some(v.to_string());
+            }
+            match key {
+                "ENVIRONMENT" => Some("production".into()),
+                "DATABASE_URL" => Some(REAL_DB.into()),
+                "JWT_SECRET" => Some(STRONG_SECRET.into()),
+                "GIT_COMMIT_HASH" => Some(GOOD_COMMIT.into()),
+                _ => None,
+            }
+        }
+    }
 
     fn mock_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -264,7 +398,8 @@ mod tests {
                 "DATABASE_URL",
                 "postgres://user:real_prod_password@db:5432/db",
             ),
-            ("JWT_SECRET", "super_secure_random_production_key_32_bytes"),
+            ("JWT_SECRET", STRONG_SECRET),
+            ("GIT_COMMIT_HASH", GOOD_COMMIT),
         ]))
         .unwrap();
         assert_eq!(config.environment, Environment::Production);
@@ -365,5 +500,198 @@ mod tests {
                 .unwrap()
                 .contains("Invalid IP or CIDR in TRUSTED_PROXIES")
         );
+    }
+
+    /// Values of `KEY=VALUE` lines in an env template, ignoring comments and blank lines.
+    fn parse_env_template(text: &str) -> HashMap<String, String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn env_example_never_boots_in_production() {
+        // Whoever copies infra/.env.example verbatim must not end up with a running, forgeable service.
+        let mut vars = parse_env_template(include_str!("../../../../infra/.env.example"));
+        vars.insert("ENVIRONMENT".into(), "production".into());
+        let result = AppConfig::from_lookup(|k| vars.get(k).cloned());
+        assert!(
+            result.is_err(),
+            "the unmodified .env.example must not boot in production"
+        );
+    }
+
+    #[test]
+    fn env_example_ships_no_secret_values() {
+        let vars = parse_env_template(include_str!("../../../../infra/.env.example"));
+        for key in ["JWT_SECRET", "POSTGRES_PASSWORD", "DATABASE_URL"] {
+            assert_eq!(
+                vars.get(key).map(String::as_str),
+                Some(""),
+                "{key} must be empty in the template"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_placeholder_jwt_secrets() {
+        let weak = [
+            "change_me_to_a_random_32_bytes_secret_key_in_production", // the old .env.example value
+            "super_secret_key_at_least_32_bytes_long_here",
+            "dev_insecure_jwt_secret_must_be_32_bytes_long_min",
+            "REPLACE_THIS_WITH_A_LONG_RANDOM_STRING_0123456789",
+            "this-is-an-example-key-0123456789abcdefghijklmnop",
+            "placeholder0123456789abcdef0123456789abcdef0123456",
+            "MyPassword0123456789abcdefghijklmnopqrstuvwxyz",
+            "changeme0123456789abcdef0123456789abcdef01234567",
+            "default-key-0123456789-abcdefghijklmnopqrstuvwxyz",
+            "short",
+        ];
+        for secret in weak {
+            let err = AppConfig::from_lookup(prod_vars(&[("JWT_SECRET", secret)]))
+                .expect_err(&format!("{secret} must be rejected"));
+            assert!(err.contains("JWT_SECRET"), "{err}");
+        }
+    }
+
+    #[test]
+    fn rejects_low_entropy_secret() {
+        for secret in ["a".repeat(64), "ab".repeat(32), "0123456789".repeat(6)] {
+            assert!(
+                AppConfig::from_lookup(prod_vars(&[("JWT_SECRET", &secret)])).is_err(),
+                "{secret} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_random_hex_and_base64_secrets() {
+        for secret in [
+            STRONG_SECRET,
+            "Vq3o8Jm1ZK7yTn5uWb2xC9dL4hR6sEaP0fGiYtXz+Nk=",
+        ] {
+            AppConfig::from_lookup(prod_vars(&[("JWT_SECRET", secret)]))
+                .unwrap_or_else(|e| panic!("{secret} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn weak_secret_is_tolerated_only_in_development() {
+        let config = AppConfig::from_lookup(mock_env(&[
+            ("ENVIRONMENT", "development"),
+            ("JWT_SECRET", "short"),
+        ]))
+        .unwrap();
+        assert_eq!(config.jwt_secret, "short");
+    }
+
+    #[test]
+    fn rejects_out_of_range_numbers() {
+        let bad = [
+            ("RATE_LIMIT_REQUESTS_PER_MINUTE", "0"),
+            ("RATE_LIMIT_REQUESTS_PER_MINUTE", "10001"),
+            ("HAZARD_CONFIRMATION_THRESHOLD", "0"),
+            ("HAZARD_CONFIRMATION_THRESHOLD", "1"),
+            ("HAZARD_CONFIRMATION_THRESHOLD", "51"),
+            ("HAZARD_DEFAULT_TTL_HOURS", "0"),
+            ("PORT", "0"),
+            ("PORT", "70000"),
+        ];
+        for (key, value) in bad {
+            let err = AppConfig::from_lookup(prod_vars(&[(key, value)]))
+                .expect_err(&format!("{key}={value} must be rejected"));
+            assert!(err.contains(key), "{err}");
+        }
+    }
+
+    #[test]
+    fn ttl_extreme_is_rejected_instead_of_panicking_later() {
+        let err = AppConfig::from_lookup(prod_vars(&[(
+            "HAZARD_DEFAULT_TTL_HOURS",
+            "9223372036854775807",
+        )]))
+        .unwrap_err();
+        assert!(err.contains("HAZARD_DEFAULT_TTL_HOURS"), "{err}");
+    }
+
+    #[test]
+    fn non_numeric_is_an_error_not_a_silent_default() {
+        for key in [
+            "RATE_LIMIT_REQUESTS_PER_MINUTE",
+            "HAZARD_CONFIRMATION_THRESHOLD",
+            "HAZARD_DEFAULT_TTL_HOURS",
+            "PORT",
+        ] {
+            let err = AppConfig::from_lookup(prod_vars(&[(key, "abc")])).unwrap_err();
+            assert!(err.contains(key), "{err}");
+        }
+    }
+
+    #[test]
+    fn prod_requires_hex_commit() {
+        for bad in [
+            "dev",
+            "development",
+            "main",
+            "ABCDEF1234567",
+            "abc123",
+            "xyz1234567",
+            &"a".repeat(41),
+        ] {
+            let err = AppConfig::from_lookup(prod_vars(&[("GIT_COMMIT_HASH", bad)])).unwrap_err();
+            assert!(err.contains("GIT_COMMIT_HASH"), "{bad}: {err}");
+        }
+        let missing = AppConfig::from_lookup(|k| {
+            if k == "GIT_COMMIT_HASH" {
+                None
+            } else {
+                prod_vars(&[])(k)
+            }
+        });
+        assert!(missing.unwrap_err().contains("GIT_COMMIT_HASH"));
+        for good in ["abcdef1", GOOD_COMMIT] {
+            AppConfig::from_lookup(prod_vars(&[("GIT_COMMIT_HASH", good)])).unwrap();
+        }
+    }
+
+    #[test]
+    fn dev_commit_hash_defaults_to_dev() {
+        let config = AppConfig::from_lookup(mock_env(&[("ENVIRONMENT", "development")])).unwrap();
+        assert_eq!(config.git_commit_hash, "dev");
+    }
+
+    #[test]
+    fn internal_service_urls_must_be_plain_http_without_extras() {
+        let bad = [
+            ("VALHALLA_URL", "https://valhalla:8002"),
+            ("VALHALLA_URL", "ftp://valhalla"),
+            ("VALHALLA_URL", "not a url"),
+            ("VALHALLA_URL", "http://user:pw@valhalla:8002"),
+            ("PHOTON_URL", "http://photon:2322/?q=1"),
+            ("PHOTON_URL", "http://photon:2322/#frag"),
+        ];
+        for (key, value) in bad {
+            let err = AppConfig::from_lookup(prod_vars(&[(key, value)])).expect_err(value);
+            assert!(err.contains(key), "{err}");
+        }
+        AppConfig::from_lookup(prod_vars(&[("VALHALLA_URL", "http://valhalla:8002/")])).unwrap();
+    }
+
+    #[test]
+    fn source_repo_url_must_be_https() {
+        assert!(
+            AppConfig::from_lookup(prod_vars(&[("SOURCE_REPO_URL", "http://example.org/repo")]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn production_database_url_must_parse() {
+        let err = AppConfig::from_lookup(prod_vars(&[("DATABASE_URL", "not-a-connection-string")]))
+            .unwrap_err();
+        assert!(err.contains("DATABASE_URL"), "{err}");
     }
 }

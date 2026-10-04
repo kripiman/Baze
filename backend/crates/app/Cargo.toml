@@ -46,3 +46,4 @@ chrono.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
 ipnet.workspace = true
+url.workspace = true

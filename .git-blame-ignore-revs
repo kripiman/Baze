@@ -4,4 +4,4 @@
 # Commits that only reformat code. Enable locally with:
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 # style(backend): apply rustfmt
-1e8686f9c1f47c98e2c5b68e05cfda3d037ae36e
+f86f11b73cd11bc0ce5dddfc14a3afa697b5ffde

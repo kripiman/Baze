@@ -239,12 +239,12 @@ pub struct CreateHazardRequest {
 impl CreateHazardRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         self.location.validate()?;
-        if let Some(ref desc) = self.description {
-            if desc.len() > 500 {
-                return Err(AppError::Validation(
-                    "Description must not exceed 500 characters".into(),
-                ));
-            }
+        if let Some(desc) = &self.description
+            && desc.len() > 500
+        {
+            return Err(AppError::Validation(
+                "Description must not exceed 500 characters".into(),
+            ));
         }
         Ok(())
     }
@@ -317,12 +317,12 @@ impl GeocodingQuery {
                 "Query parameter 'q' must not exceed 200 characters".into(),
             ));
         }
-        if let Some(limit) = self.limit {
-            if !(1..=100).contains(&limit) {
-                return Err(AppError::Validation(
-                    "Limit parameter must be between 1 and 100".into(),
-                ));
-            }
+        if let Some(limit) = self.limit
+            && !(1..=100).contains(&limit)
+        {
+            return Err(AppError::Validation(
+                "Limit parameter must be between 1 and 100".into(),
+            ));
         }
         Ok(())
     }

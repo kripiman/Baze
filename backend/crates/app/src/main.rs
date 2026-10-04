@@ -51,10 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if let Ok(purged) = purge_service.purge_expired() {
-                if purged > 0 {
-                    tracing::debug!(purged_count = purged, "Purged expired hazard reports");
-                }
+            if let Ok(purged) = purge_service.purge_expired()
+                && purged > 0
+            {
+                tracing::debug!(purged_count = purged, "Purged expired hazard reports");
             }
         }
     });

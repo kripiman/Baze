@@ -36,12 +36,11 @@ where
             None => false,
         };
 
-        if is_trusted_proxy {
-            if let Some(xri) = parts.headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-                if let Ok(parsed_ip) = xri.trim().parse::<IpAddr>() {
-                    return Ok(ClientIp(parsed_ip.to_canonical()));
-                }
-            }
+        if is_trusted_proxy
+            && let Some(xri) = parts.headers.get("x-real-ip").and_then(|h| h.to_str().ok())
+            && let Ok(parsed_ip) = xri.trim().parse::<IpAddr>()
+        {
+            return Ok(ClientIp(parsed_ip.to_canonical()));
         }
 
         if let Some(ip) = canonical_peer {

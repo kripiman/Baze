@@ -11,10 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let json = openapi.to_pretty_json()?;
 
     let target_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../contracts/openapi.json");
-    if let Some(parent) = target_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = target_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     fs::write(&target_path, &json)?;

@@ -202,6 +202,24 @@ pub enum HazardType {
     Blocking,
 }
 
+impl HazardType {
+    /// The value stored in the database and used in the JSON contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Blocking => "blocking",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "warning" => Some(Self::Warning),
+            "blocking" => Some(Self::Blocking),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HazardCategory {
@@ -214,6 +232,30 @@ pub enum HazardCategory {
 }
 
 impl HazardCategory {
+    /// The value stored in the database and used in the JSON contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Glass => "glass",
+            Self::Pothole => "pothole",
+            Self::Debris => "debris",
+            Self::RoadClosed => "road_closed",
+            Self::Construction => "construction",
+            Self::Flood => "flood",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "glass" => Some(Self::Glass),
+            "pothole" => Some(Self::Pothole),
+            "debris" => Some(Self::Debris),
+            "road_closed" => Some(Self::RoadClosed),
+            "construction" => Some(Self::Construction),
+            "flood" => Some(Self::Flood),
+            _ => None,
+        }
+    }
+
     pub const fn hazard_type(self) -> HazardType {
         match self {
             Self::Glass | Self::Pothole | Self::Debris => HazardType::Warning,
@@ -228,6 +270,26 @@ pub enum HazardStatus {
     Unconfirmed,
     Confirmed,
     Resolved,
+}
+
+impl HazardStatus {
+    /// The value stored in the database and used in the JSON contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "unconfirmed",
+            Self::Confirmed => "confirmed",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "unconfirmed" => Some(Self::Unconfirmed),
+            "confirmed" => Some(Self::Confirmed),
+            "resolved" => Some(Self::Resolved),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, ToSchema)]
@@ -424,6 +486,30 @@ pub struct GeocodingItem {
     pub location: GeoJsonPoint,
 }
 
+/// Community hazard reports: what the HTTP layer needs from the store behind them.
+#[async_trait]
+pub trait HazardStore: Send + Sync {
+    /// Stores a new report. The reporter's own vote counts as the first one.
+    async fn create_hazard(
+        &self,
+        account: &AccountContext,
+        request: &CreateHazardRequest,
+        client_ip: IpAddr,
+    ) -> Result<Hazard, AppError>;
+
+    /// Records or changes `account`'s vote. Unknown, expired and retired reports are `NotFound`.
+    async fn vote_hazard(
+        &self,
+        hazard_id: Uuid,
+        account: &AccountContext,
+        vote: Vote,
+        client_ip: IpAddr,
+    ) -> Result<Hazard, AppError>;
+
+    /// Active (not expired, not retired) reports inside `bbox`, newest first and capped.
+    async fn list_active_hazards(&self, bbox: &BoundingBox) -> Result<Vec<Hazard>, AppError>;
+}
+
 #[async_trait]
 pub trait CorridorHazards: Send + Sync {
     /// Finds confirmed blocking hazard polygons along the route corridor buffer.
@@ -457,6 +543,41 @@ pub trait GeocodingProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_strings_match_the_json_contract_and_round_trip() {
+        for category in [
+            HazardCategory::Glass,
+            HazardCategory::Pothole,
+            HazardCategory::Debris,
+            HazardCategory::RoadClosed,
+            HazardCategory::Construction,
+            HazardCategory::Flood,
+        ] {
+            let json = serde_json::to_value(category).unwrap();
+            assert_eq!(json, category.as_str());
+            assert_eq!(HazardCategory::from_db(category.as_str()), Some(category));
+            assert_eq!(
+                serde_json::to_value(category.hazard_type()).unwrap(),
+                category.hazard_type().as_str()
+            );
+            assert_eq!(
+                HazardType::from_db(category.hazard_type().as_str()),
+                Some(category.hazard_type())
+            );
+        }
+        for status in [
+            HazardStatus::Unconfirmed,
+            HazardStatus::Confirmed,
+            HazardStatus::Resolved,
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), status.as_str());
+            assert_eq!(HazardStatus::from_db(status.as_str()), Some(status));
+        }
+        assert_eq!(HazardCategory::from_db("Glass"), None);
+        assert_eq!(HazardType::from_db(""), None);
+        assert_eq!(HazardStatus::from_db("deleted"), None);
+    }
 
     #[test]
     fn test_network_of_and_client_network() {

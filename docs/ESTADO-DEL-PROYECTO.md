@@ -13,14 +13,14 @@ Documento de traspaso: **qué se hizo, qué falta y cómo retomar** el trabajo s
 
 ---
 
-## 1. Resumen en diez líneas
+## 1. Resumen
 
-1. La **Ronda 1** (seguridad, persistencia real en PostGIS, infraestructura endurecida, CI verde, Android compilando, documentación) está **implementada, empujada y verificada en el CI real**.
-2. El backend ya **no es un stub en lo que toca a datos**: cuentas, reportes y votos viven en PostgreSQL/PostGIS, con migraciones, rol de BD sin privilegios, purga de caducados, topes anti-abuso y consultas de corredor.
-3. **Ruteo y geocodificación siguen respondiendo `501`** a propósito (fail-closed): devolver una ruta falsa es peor que fallar. Se retiran en las Etapas A y B.
-4. La app Android **compila y pasa lint, pruebas y R8**, pero sigue siendo un andamiaje: no es funcional todavía (Etapa C).
-5. Las imágenes de motores del `compose.yaml` (`gisops/valhalla:3.4.0`, `ghcr.io/komoot/photon:0.5.0`) **no existen** tal cual; el perfil `engines` no puede arrancar hasta la Etapa B.
-6. Fase en curso autorizada por el mantenedor: **Etapas 0 + A + B**. Las Etapas C y D están planificadas pero **no autorizadas**.
+1. La **Ronda 1** (seguridad, persistencia real en PostGIS, infraestructura endurecida, CI verde, Android compilando, documentación) y la fase **0 + A + B** (ruteo y búsqueda reales, pipeline de datos y motores) están **implementadas, empujadas y verificadas en el CI real**.
+2. El backend persiste cuentas, reportes y votos en PostgreSQL/PostGIS (migraciones, rol sin privilegios, purga, topes anti-abuso) y **rutea de verdad**: pide la ruta a Valhalla, comprueba los cierres confirmados en PostGIS y repite la petición con `exclude_polygons` hasta que la ruta no cruce ninguno. Es **fail-closed**: nunca entrega una ruta que cruce un cierre confirmado (`404` si no hay alternativa, `503` si hay demasiados cierres).
+3. Ruteo y búsqueda están **apagados por defecto** (`ENGINES_ENABLED=false` ⇒ `501`): un despliegue debe construir antes los datos de su región y levantar los motores (`docs/operations.md`, sección 5.1).
+4. El pipeline de datos (`data/scripts/`) descarga y verifica el extracto, construye las teselas, un grafo de Valhalla **con elevación obligatoria** y el índice de Photon, y publica el mapa con un manifiesto (tamaño y sha256). `data-smoke.yml` lo ejecuta con motores reales sobre Mónaco, cada semana y en cada cambio.
+5. La app Android **compila y pasa lint, pruebas y R8**, pero sigue siendo un andamiaje: no es funcional todavía (Etapa C, **no autorizada**).
+6. Falta, además de la app, lo que solo puede decidir el mantenedor (sección 4.4): región y fuente de Photon para el despliegue, CLA, buzón de seguridad, dominio.
 
 ---
 
@@ -104,28 +104,14 @@ GIT_COMMITTER_NAME="gabriel" GIT_COMMITTER_EMAIL="131714613+gabrielpinones@users
 
 ## 4. Qué falta
 
-### 4.1 Fase en curso — autorizada por el mantenedor (Etapas 0 + A + B)
+### 4.1 Fase 0 + A + B (autorizada): hecha
 
-**Etapa 0 — Cierre de la Ronda 1**
-- SSE: hoy `realtime` descarta en silencio los eventos perdidos (`BroadcastStreamRecvError::Lagged ⇒ None`). Pasar a `StreamEvent { Hazard, Resync }` y emitir `event: resync`; documentarlo en OpenAPI y regenerar `contracts/openapi.json`; pruebas de unidad y HTTP.
-- `AGENTS.md` desactualizado (falta `infra.yml`/`security.yml` en la lista de workflows y la descripción actual del job Android).
-- Aviso cosmético de licensee: `Allowed SPDX identifier 'BSD-3-Clause' is unused`.
+Detalle y evidencia en la sección 6. Lo que queda **fuera** de lo verificado, y es del mantenedor:
 
-**Etapa A — Ruteo y búsqueda reales (backend)**
-- Cliente Valhalla en `routing` (`valhalla.rs`, `polyline.rs`, `exclusions.rs`): `POST /route`, `costing: bicycle`, decodificador polyline6, maniobras, ascenso/descenso desde `elevation`; errores ⇒ `Upstream` (502 genérico) o `NotFound`; **nunca registrar coordenadas** (ADR-0005).
-- Evitación de cierres (ADR-0002): ruta base ⇒ consulta de corredor (15 m) ⇒ si hay cierres, nueva petición con `exclude_polygons`; máximo 3 rondas; más de 50 polígonos ⇒ 503; sin alternativa ⇒ 404.
-- `shared::simplify_line` (Douglas-Peucker) para respetar `MAX_CORRIDOR_POINTS = 10 000` y límite de distancia ≤ 150 km en `RouteRequest::validate`.
-- Cliente Photon en `geocoding` (`GET /api` con `.query()`, nunca interpolar `q`; no registrar el texto buscado).
-- Pruebas con Valhalla/Photon falsos en proceso, integración con BD, e2e con un Valhalla de juguete en `scripts/e2e/audit_regression.py`.
-- **El `501` se mantiene en el despliegue hasta el final de B.** Parada para revisión al terminar A.
-
-**Etapa B — Pipeline de datos y motores**
-- Imagen de Valhalla oficial `ghcr.io/valhalla/valhalla` fijada por digest; Photon con imagen propia (JRE fijado por digest, JAR 1.x con sha256 verificado, usuario no root); Planetiler 0.10.x.
-- Scripts `data/scripts/01..05` endurecidos (checksums, `--proto '=https'`, elevación **obligatoria**, extracciones atómicas, publicación de `tiles.pmtiles.sha256`).
-- `data/styles/style.json` con marcador `{{PMTILES_URL}}`, atribución y sin sprite/glyphs que no existen.
-- `.github/workflows/data-smoke.yml` (manual y semanal): extracto de Mónaco por los scripts, motores + backend, ruta real con ascenso, ruta que cambia con un cierre confirmado, búsqueda real con un fixture de Photon versionado.
-- Caddy: `Cache-Control`/`Accept-Ranges` para `/static/tiles.pmtiles`; docs de motores y datos.
-- **El `501` solo se retira si `data-smoke.yml` pasa.**
+- **Datos de la región real**: el smoke prueba Mónaco. El tamaño de Chile (memoria de Planetiler, de Valhalla y de Photon, tiempo de construcción) y el índice de búsqueda nacional no se han probado.
+- **Fuente de Photon**: el script acepta un volcado JSON o una base ya construida (GraphHopper publica una por país, pero su servidor está bloqueado desde el sandbox, así que ni la URL de Chile ni su checksum están confirmados). Para buscar sobre el mismo extracto que el resto hace falta exportar un volcado desde una importación Nominatim.
+- **Elevación de la región**: las teselas se bajan del bucket público de AWS; la atribución de las fuentes de la región elegida debe confirmarse (`ATTRIBUTION.md`).
+- **Encender los motores en producción** (`ENGINES_ENABLED=true`) solo después de construir los datos y comprobar con `scripts/e2e/engines_smoke.py` (sección 5.7).
 
 ### 4.2 Planificado, NO autorizado (requiere nueva aprobación del mantenedor)
 
@@ -138,7 +124,7 @@ GIT_COMMITTER_NAME="gabriel" GIT_COMMITTER_EMAIL="131714613+gabrielpinones@users
 - Riesgo V7: el permiso `pull-requests: read` de gitleaks se añadió de forma preventiva; no se ha podido verificar porque no hay PRs.
 - La auditoría original dice 11 tests; los reales eran 10 (dato menor).
 
-### 4.4 Decisiones del mantenedor (no bloquean las Etapas 0 y A)
+### 4.4 Decisiones del mantenedor
 
 1. Reparto autor/co-autor de los dos correos (hoy: autor `gabrielpinones`, co-autor `kripiman`).
 2. CLA: redactar el texto o mantener la política interina de `CONTRIBUTING.md` (sin PRs de código externos).
@@ -166,13 +152,13 @@ export DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres   # trust auth, 
 make backend-check        # fmt, clippy -D warnings, tests, export-openapi --check
 make backend-db-test      # incluye las pruebas con PostGIS (necesita DATABASE_URL)
 (cd backend && cargo deny check bans licenses sources && cargo +1.88.0 check --locked --workspace)
-bash scripts/check-toolchain-sync.sh && bash scripts/compose-check.sh
-shellcheck scripts/*.sh scripts/e2e/*.sh data/scripts/*.sh
+bash scripts/check-toolchain-sync.sh && bash scripts/compose-check.sh && python3 scripts/check-style.py
+shellcheck scripts/*.sh scripts/e2e/*.sh data/scripts/*.sh data/scripts/container/*.sh
 url="$(bash scripts/e2e/prepare-db.sh "$DATABASE_URL")"
-python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through <N>
+python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through 11
 ```
 
-Tras cada push se revisan los workflows (`backend.yml`, `infra.yml`, `android.yml`, `secrets.yml`, `security.yml`) con las herramientas MCP de GitHub y se corrige antes de seguir. Una etapa se cierra solo con CI verde.
+Tras cada push se revisan los workflows (`backend.yml`, `infra.yml`, `android.yml`, `data-smoke.yml`, `secrets.yml`, `security.yml`) con las herramientas MCP de GitHub y se corrige antes de seguir. Una etapa se cierra solo con CI verde.
 
 ### 5.3 Qué no se puede verificar desde el sandbox
 
@@ -193,14 +179,45 @@ Sí se puede consultar desde el sandbox: GitHub (`git ls-remote`, assets de rele
 - `core/model` y `core/domain` de Android son Kotlin puro (lo verifica `checkPurity`).
 - Las migraciones aplicadas nunca se editan: cambios en un archivo nuevo.
 
-### 5.5 Hechos verificados sobre los motores (para la Etapa B)
+### 5.5 Hechos verificados sobre los motores
 
-- `gisops/valhalla:3.4.0` no existe. La imagen oficial es `ghcr.io/valhalla/valhalla` (tags hasta 3.9.0; el digest se resuelve con la API del registro).
-- `ghcr.io/komoot/photon:0.5.0` no parece existir. Photon se distribuye como JAR (tags hasta 1.3.0, basado en OpenSearch, formato de BD `1.0`); los índices los publica GraphHopper.
-- Planetiler: el script fija 0.8.2; la última es 0.10.2.
-- Valhalla (docs 3.6.0): `exclude_polygons` son anillos anidados `[lon,lat]`; `elevation_interval` devuelve `elevation` por tramo si los datos se generaron con elevación; hay un límite de perímetro total de exclusiones (confirmar el valor por defecto en la imagen elegida).
-- MapLibre Native Android: PMTiles llegó en 11.8.0; el catálogo fija 11.7.0; última 13.6.1.
+- `gisops/valhalla:3.4.0` y `ghcr.io/komoot/photon:0.5.0` **no existen**. Valhalla: imagen oficial `ghcr.io/valhalla/valhalla:3.9.0` por digest. Photon: sin imagen oficial; `infra/photon/Dockerfile` descarga el jar 1.3.0 de la release con `ADD --checksum` sobre Temurin 21 fijado por digest.
+- Valhalla: `exclude_polygons` son anillos `[lon, lat]`; el límite por defecto del perímetro total es 10 000 m (`max_exclude_polygons_length`), de ahí el tope de 50 polígonos de 30 m; los errores `170/171/440/441/442` son «no hay ruta»; `valhalla_build_elevation` **no falla** si no puede bajar una tesela (por eso `valhalla-build.sh` lo comprueba); el orden correcto es `build` → elevación → `enhance` → extracto tar.
+- Photon 1.3.0: `java -jar photon.jar import -import-file <volcado.jsonl> -data-dir <dir>` y `serve -data-dir <dir> -listen-ip 0.0.0.0`; no registra el texto buscado; formato de volcado en `docs/json-dump-format-0.1.0.md` del repo de Photon. `/status` responde `{"status":"Ok",…}`.
+- Planetiler 0.10.2 por digest; con `--osm-path` y `--download`; para Mónaco acepta fuentes diminutas (`--water-polygons-url`, `--natural-earth-url`) de sus recursos de prueba.
+- MapLibre Native Android: PMTiles llegó en **11.8.0**; el catálogo fija 11.7.0 (Etapa C); última 13.6.1.
 - El contrato de maniobras (`instruction`, `distance_meters`, `time_seconds`, `location`) coincide entre backend y Android.
+
+### 5.6 Validar los motores en el sandbox, sin Docker
+
+Se hizo para esta fase y conviene repetirlo ante cualquier cambio en los clientes o los scripts:
+
+```bash
+# Valhalla real: la rueda pyvalhalla trae los binarios (Python 3.12; uv ya está instalado)
+uv venv --python 3.12 venv && uv pip install --python venv/bin/python pyvalhalla==3.9.0 numpy
+# Extractos de prueba desde GitHub raw (Geofabrik está bloqueado): valhalla/test/data/utrecht_netherlands.osm.pbf
+#   y planetiler-core/src/test/resources/monaco-latest.osm.pbf (tag v0.10.2)
+# valhalla_build_config/elevation/extract son scripts Python dentro de la rueda (valhalla/*.py): envuélvelos en un
+#   directorio con `PYTHONPATH=<site-packages> python <script>.py "$@"` y ponlo en el PATH.
+# Sin acceso a AWS: una tesela .hgt sintética (3601×3601, int16 big-endian) en elevation_tiles/N43/N43E007.hgt
+CUSTOM_FILES=… INPUT_PBF=… bash data/scripts/container/valhalla-build.sh      # el mismo script que corre en Docker
+valhalla_service …/valhalla.json 2                                             # en :8002
+# Photon real: el jar de la release (java 21 está instalado)
+java -jar photon-1.3.0.jar import -import-file data/fixtures/photon-monaco.jsonl -data-dir <dir> -languages es,en
+java -jar photon-1.3.0.jar serve -data-dir <dir> -listen-ip 127.0.0.1 -listen-port 2322
+# Backend contra ambos (ENGINES_ENABLED=true) y el smoke:
+python3 scripts/e2e/engines_smoke.py --backend http://127.0.0.1:18080 --psql "psql <url> -X -q -t -A"
+```
+
+Trampas encontradas: `pkill -f` con una cadena que aparece en tu propio comando mata tu shell; `valhalla_service` ignora SIGTERM mientras atiende (usa `kill -9`); el disco del sandbox es una cuota fija (los `target/` de cargo llegan a 23 GB: usa `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0` y `cargo clean` cuando haga falta).
+
+### 5.7 Poner en marcha los motores en un despliegue
+
+```bash
+make data-build                       # con PHOTON_IMPORT_FILE o PHOTON_DUMP_URL + PHOTON_DUMP_SHA256 para el paso 04
+docker compose -f infra/compose.yaml --env-file infra/.env --profile engines up -d --build --wait
+# En infra/.env: ENGINES_ENABLED=true; reinicia el backend; comprueba con scripts/e2e/engines_smoke.py
+```
 
 ---
 
@@ -211,11 +228,11 @@ Sí se puede consultar desde el sandbox: GitHub (`git ls-remote`, assets de rele
 | Handoff (este documento) | Hecho | `8441244` | Secrets Audit verde |
 | 0 — resync SSE, AGENTS.md, licensee | **Hecho** | `a5275e2`, `321a2b2`, `d5fdee2`, `46ab936` | Backend CI verde; Android CI verde (run 37225225205; el primer intento murió por `OutOfMemoryError` del demonio de Gradle y se subió el heap a 3 GB) |
 | A — clientes Valhalla y Photon | **Hecho** | `688f0dc`, `5ff9f81`, `f984625`, `7d1d24d`, `32a75bf`, `371c3bd`, `abaccc9` | Backend CI, Infrastructure CI, Secrets y Security verdes en `371c3bd` (e2e hasta el paso 11 incluido) |
-| B — pipeline de datos y smoke | En curso | — | — |
+| B — pipeline de datos y motores | **Hecho** | `07e4729`, `a76d8a0`, `e538c59`, `e4f7fec`, `b6a912c`, `9e220f3`, `181c52d` | Data pipeline smoke verde en `9e220f3` (run 37227299049: teselas + estilo + motores reales detrás del backend); Infrastructure CI y Backend CI verdes |
 | C — Android funcional | No autorizada | — | — |
 | D — documentación de cierre | No autorizada | — | — |
 
-### Validación local con motores reales (Etapas 0 y A)
+### Validación local con motores reales (Etapas 0, A y B)
 
 Además de los motores simulados, el cliente se probó contra **Valhalla 3.9.0 real** (rueda `pyvalhalla` con un extracto de Utrecht y una tesela de elevación sintética) y **Photon 1.3.0 real** (el JAR oficial importando `data/fixtures/photon-monaco.jsonl`). Resultados:
 
@@ -224,3 +241,5 @@ Además de los motores simulados, el cliente se probó contra **Valhalla 3.9.0 r
 - Un punto fuera del extracto da `404` con el código real de Valhalla.
 - La búsqueda devuelve los resultados esperados (`name`, `street` + número, `city`, `country`) y trata `limit=1000&…` como texto.
 - Hallazgo corregido: el filtro de logs por defecto ocultaba los avisos del crate `routing` (`abaccc9`).
+- Etapa B: el script de construcción de Valhalla (el mismo que corre en Docker) se probó sobre Mónaco con una tesela de elevación sintética, y falla (sin dejar `valhalla_tiles.tar`) si la tesela falta o está truncada; el smoke (`engines_smoke.py`) pasó entero contra Valhalla 3.9.0 y Photon 1.3.0 reales, con rodeos a 33–158 m de cada cierre probado.
+- En el CI (`data-smoke.yml`, primera ejecución): descarga verificada con el `.md5` de Geofabrik, Planetiler con fuentes de Mónaco y PMTiles v3 válido, manifiesto coherente con el archivo, estilo aceptado por el validador oficial de MapLibre, grafo de Valhalla con la elevación real descargada de AWS, índice de Photon construido con la imagen propia, pila con los motores sanos, rutas con elevación real y rodeos del cierre, motores sin puertos publicados, usuario no root con sistema de archivos de solo lectura, y ni el texto buscado ni las coordenadas en ningún log.

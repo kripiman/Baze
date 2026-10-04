@@ -37,3 +37,17 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+
+  # The base image of the Photon image (a Java runtime pinned by tag and digest).
+  - package-ecosystem: docker
+    directory: /infra/photon
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Caddy, PostGIS and Valhalla in the Compose file, also pinned by tag (and digest where it applies).
+  - package-ecosystem: docker-compose
+    directory: /infra
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

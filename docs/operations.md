@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 Cómo configurar, desplegar y mantener el backend. Las decisiones de fondo están en los ADR [0007](adr/0007-identity-voting-and-abuse-limits.md) y [0008](adr/0008-database-roles-migrations-and-vote-networks.md).
 
-> **Estado**: el backend persiste reportes, votos y cuentas. Ruteo y geocodificación tienen cliente real, pero solo se usan con `ENGINES_ENABLED=true`; apagado (por defecto) responden `501 Not Implemented`. Los motores reales y sus datos se verifican en el pipeline de datos (`data/README.md`): hasta que ese paso esté verde, no actives los motores en un despliegue público.
+> **Estado**: el backend persiste reportes, votos y cuentas. Ruteo y geocodificación tienen cliente real y los motores reales (Valhalla y Photon) se verifican sobre Mónaco en `data-smoke.yml`; con `ENGINES_ENABLED` apagado (el valor por defecto) responden `501 Not Implemented`. Antes de encender los motores en un despliegue público construye los datos de tu región y comprueba el resultado (sección 5.1).
 
 ## 1. Secretos y primer arranque
 

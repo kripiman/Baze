@@ -184,29 +184,61 @@ services:
     pids_limit: 512
     mem_limit: 1g
 
-  # Los motores de ruteo y geocodificación aún no están conectados al backend (responde 501) y
-  # necesitan datos generados con `make data-build`. Se activan con `--profile engines`.
+  # Motores de ruteo y búsqueda. Opcionales (`--profile engines`): necesitan los datos de `make data-build` y el
+  # backend solo los usa con ENGINES_ENABLED=true. Corren sin privilegios, con el mismo usuario que construyó los
+  # datos (ENGINES_UID/ENGINES_GID), sin puertos publicados y solo en la red interna.
   valhalla:
     <<: *hardened
-    image: gisops/valhalla:3.4.0
+    # Imagen oficial fijada por digest; el mismo digest que usa data/scripts/03-build-valhalla.sh para el grafo.
+    image: ghcr.io/valhalla/valhalla:3.9.0@sha256:511c095b8caf393dccceb8b519ec96b6f85a0166b2288ba014a8a748acc5a63c
     container_name: baze-valhalla
     profiles: ["engines"]
+    user: "${ENGINES_UID:-1000}:${ENGINES_GID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["valhalla_service", "/custom_files/valhalla.json", "${VALHALLA_THREADS:-2}"]
     volumes:
+      # El grafo y las teselas de elevación, en solo lectura: el motor no necesita escribir nada.
       - ../data/out/valhalla:/custom_files:ro
     networks:
       - internal
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "3", "http://127.0.0.1:8002/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     pids_limit: 512
     mem_limit: 2g
 
   photon:
     <<: *hardened
-    image: ghcr.io/komoot/photon:0.5.0 # TODO(verify): Verificar compatibilidad de la imagen y arquitectura
+    # No existe imagen oficial: se construye aquí a partir del jar de la release, verificado por checksum.
+    image: baze-photon
+    build:
+      context: ./photon
+      dockerfile: Dockerfile
     container_name: baze-photon
     profiles: ["engines"]
+    user: "${ENGINES_UID:-1000}:${ENGINES_GID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      - JAVA_TOOL_OPTIONS=${PHOTON_JAVA_OPTS:--Xmx1g -Duser.home=/tmp}
     volumes:
-      - ../data/out/photon:/photon/photon_data:ro
+      # Lectura y escritura: el OpenSearch embebido guarda sus archivos de bloqueo junto al índice.
+      - ../data/out/photon:/photon
     networks:
       - internal
+    healthcheck:
+      # Solo bash: sin depender de curl ni wget dentro de la imagen.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/2322 && printf 'GET /status HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q Ok <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     pids_limit: 512
     mem_limit: 2g
 

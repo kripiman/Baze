@@ -94,6 +94,30 @@ def check(cfg):
             errors.append(f"caddy address {caddy_ip} lies inside the dynamic ip_range {ip_range}")
         if backend_env.get("TRUSTED_PROXIES") != caddy_ip:
             errors.append(f"backend TRUSTED_PROXIES must be exactly caddy's address ({caddy_ip})")
+    # The engines run unprivileged and read-only; their images are pinned by digest (Valhalla) or built from a
+    # Dockerfile that verifies the jar's checksum (Photon). Valhalla's data is mounted read-only.
+    for name in ("valhalla", "photon"):
+        engine = services.get(name)
+        if engine is None:
+            errors.append(f"the {name} service is missing")
+            continue
+        if "engines" not in (engine.get("profiles") or []):
+            errors.append(f"{name}: must belong to the `engines` profile")
+        if not engine.get("read_only"):
+            errors.append(f"{name}: root filesystem must be read-only")
+        user = str(engine.get("user") or "")
+        if not user or user.split(":")[0] in ("0", "root"):
+            errors.append(f"{name}: must run as a non-root user (got {user!r})")
+        if name == "valhalla" and "@sha256:" not in str(engine.get("image")):
+            errors.append("valhalla: the image must be pinned by digest")
+        if name == "photon" and not engine.get("build"):
+            errors.append("photon: must be built from infra/photon (no official image exists)")
+        if not (engine.get("healthcheck") or {}).get("test"):
+            errors.append(f"{name}: needs a healthcheck")
+    for mount in (services.get("valhalla") or {}).get("volumes", []):
+        if str(mount.get("target")) == "/custom_files" and not mount.get("read_only"):
+            errors.append("valhalla: its data must be mounted read-only")
+
     postgis_mounts = [m.get("target", "") for m in services["postgis"].get("volumes", [])]
     if "/docker-entrypoint-initdb.d" not in postgis_mounts:
         errors.append("postgis: the role bootstrap script is not mounted")

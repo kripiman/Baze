@@ -35,6 +35,8 @@ sed \
   -e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://baze_app:${app_password}@postgis:5432/${db_name}|" \
   -e "s|^MIGRATION_DATABASE_URL=.*|MIGRATION_DATABASE_URL=postgres://${db_owner}:${db_password}@postgis:5432/${db_name}|" \
   -e "s|^JWT_SECRET=.*|JWT_SECRET=${jwt_secret}|" \
+  -e "s|^ENGINES_UID=.*|ENGINES_UID=$(id -u)|" \
+  -e "s|^ENGINES_GID=.*|ENGINES_GID=$(id -g)|" \
   "$example" > "$target"
 
 echo "Created infra/.env with random secrets (mode 600). Review it before using it outside local development."

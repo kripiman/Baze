@@ -31,11 +31,13 @@
     @docs path /swagger-ui /swagger-ui/* /api-docs /api-docs/*
     respond @docs 404
 
-    # Artefactos públicos estáticos (PMTiles, estilos). Solo se monta data/out/public, sin listado de
-    # directorios. El cliente es nativo, así que no hace falta CORS. Las peticiones Range las atiende
-    # file_server, que es lo que necesita PMTiles.
+    # Artefactos públicos estáticos (PMTiles, manifiesto, estilo). Solo se monta data/out/public, sin listado de
+    # directorios. El cliente es nativo, así que no hace falta CORS. `file_server` atiende las peticiones Range
+    # (anuncia Accept-Ranges: bytes) y valida con ETag/Last-Modified: la app repite la descarga solo si hay un
+    # mapa nuevo, y max-age corto evita que un proxy intermedio sirva uno viejo durante horas.
     handle_path /static/* {
         root * /var/www/static
+        header Cache-Control "public, max-age=300, must-revalidate"
         file_server
     }
 

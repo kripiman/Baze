@@ -45,6 +45,12 @@ pub struct AppConfig {
     pub rate_limit_rpm: u64,
     pub confirmation_threshold: i32,
     pub default_ttl_hours: i64,
+    /// An account younger than this cannot vote or report a road closure (anti-Sybil, ADR-0007).
+    pub account_min_age_secs: u64,
+    /// New reports one account may file in 24 hours.
+    pub reports_per_account_per_day: u32,
+    /// Votes on other people's reports one account may cast in 24 hours.
+    pub votes_per_account_per_day: u32,
     pub source_repo_url: String,
     pub git_commit_hash: String,
     pub trusted_proxies: Vec<IpNet>,
@@ -285,6 +291,21 @@ impl AppConfig {
             );
         }
 
+        let account_min_age_secs = parse_lookup_var(&lookup, "ACCOUNT_MIN_AGE_SECONDS", 600u64)?;
+        if account_min_age_secs > 86_400 {
+            return Err("ACCOUNT_MIN_AGE_SECONDS must be between 0 and 86400".into());
+        }
+        let reports_per_account_per_day =
+            parse_lookup_var(&lookup, "REPORTS_PER_ACCOUNT_PER_DAY", 30u32)?;
+        if !(1..=1000).contains(&reports_per_account_per_day) {
+            return Err("REPORTS_PER_ACCOUNT_PER_DAY must be between 1 and 1000".into());
+        }
+        let votes_per_account_per_day =
+            parse_lookup_var(&lookup, "VOTES_PER_ACCOUNT_PER_DAY", 200u32)?;
+        if !(1..=5000).contains(&votes_per_account_per_day) {
+            return Err("VOTES_PER_ACCOUNT_PER_DAY must be between 1 and 5000".into());
+        }
+
         let source_repo_url = lookup_trimmed(&lookup, "SOURCE_REPO_URL")
             .unwrap_or_else(|| "https://github.com/kripiman/Baze".to_string());
         if !source_repo_url.starts_with("https://") {
@@ -341,6 +362,9 @@ impl AppConfig {
             rate_limit_rpm,
             confirmation_threshold,
             default_ttl_hours,
+            account_min_age_secs,
+            reports_per_account_per_day,
+            votes_per_account_per_day,
             source_repo_url,
             git_commit_hash,
             trusted_proxies,
@@ -659,6 +683,12 @@ mod tests {
             ("HAZARD_CONFIRMATION_THRESHOLD", "1"),
             ("HAZARD_CONFIRMATION_THRESHOLD", "51"),
             ("HAZARD_DEFAULT_TTL_HOURS", "0"),
+            ("ACCOUNT_MIN_AGE_SECONDS", "86401"),
+            ("ACCOUNT_MIN_AGE_SECONDS", "-1"),
+            ("REPORTS_PER_ACCOUNT_PER_DAY", "0"),
+            ("REPORTS_PER_ACCOUNT_PER_DAY", "1001"),
+            ("VOTES_PER_ACCOUNT_PER_DAY", "0"),
+            ("VOTES_PER_ACCOUNT_PER_DAY", "5001"),
             ("PORT", "0"),
             ("PORT", "70000"),
         ];
@@ -685,6 +715,9 @@ mod tests {
             "RATE_LIMIT_REQUESTS_PER_MINUTE",
             "HAZARD_CONFIRMATION_THRESHOLD",
             "HAZARD_DEFAULT_TTL_HOURS",
+            "ACCOUNT_MIN_AGE_SECONDS",
+            "REPORTS_PER_ACCOUNT_PER_DAY",
+            "VOTES_PER_ACCOUNT_PER_DAY",
             "PORT",
         ] {
             let err = AppConfig::from_lookup(prod_vars(&[(key, "abc")])).unwrap_err();
@@ -788,6 +821,18 @@ mod tests {
             let err = AppConfig::from_lookup(prod_vars(&[(key, value)])).expect_err(value);
             assert!(err.contains(key), "{err}");
         }
+    }
+
+    #[test]
+    fn abuse_limits_have_defaults_and_can_be_relaxed_for_tests() {
+        let config = AppConfig::from_lookup(prod_vars(&[])).unwrap();
+        assert_eq!(config.account_min_age_secs, 600);
+        assert_eq!(config.reports_per_account_per_day, 30);
+        assert_eq!(config.votes_per_account_per_day, 200);
+
+        // Zero disables the age gate (the end-to-end harness needs it); the caps cannot be disabled.
+        let relaxed = AppConfig::from_lookup(prod_vars(&[("ACCOUNT_MIN_AGE_SECONDS", "0")]));
+        assert_eq!(relaxed.unwrap().account_min_age_secs, 0);
     }
 
     #[test]

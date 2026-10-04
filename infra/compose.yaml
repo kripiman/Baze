@@ -88,6 +88,10 @@ services:
       - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
       - HAZARD_CONFIRMATION_THRESHOLD=${HAZARD_CONFIRMATION_THRESHOLD:-3}
       - HAZARD_DEFAULT_TTL_HOURS=${HAZARD_DEFAULT_TTL_HOURS:-24}
+      # Vacío = valor por defecto del backend
+      - ACCOUNT_MIN_AGE_SECONDS=${ACCOUNT_MIN_AGE_SECONDS:-}
+      - REPORTS_PER_ACCOUNT_PER_DAY=${REPORTS_PER_ACCOUNT_PER_DAY:-}
+      - VOTES_PER_ACCOUNT_PER_DAY=${VOTES_PER_ACCOUNT_PER_DAY:-}
       - SOURCE_REPO_URL=${SOURCE_REPO_URL:-https://github.com/kripiman/Baze}
       # Solo Caddy (IP fija) es proxy de confianza: cualquier otro contenedor no puede falsear X-Real-IP.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.30.0.2}

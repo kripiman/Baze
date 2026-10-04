@@ -68,6 +68,7 @@ impl From<AppError> for HttpError {
         match err {
             AppError::NotFound(msg) => Self::new(StatusCode::NOT_FOUND, msg),
             AppError::Unauthorized(msg) => Self::new(StatusCode::UNAUTHORIZED, msg),
+            AppError::Forbidden(msg) => Self::new(StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => Self::new(StatusCode::BAD_REQUEST, msg),
             AppError::Conflict(msg) => Self::new(StatusCode::CONFLICT, msg),
             AppError::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
@@ -202,6 +203,7 @@ mod tests {
                 AppError::Unauthorized("who?".into()),
                 StatusCode::UNAUTHORIZED,
             ),
+            (AppError::Forbidden("no".into()), StatusCode::FORBIDDEN),
             (AppError::Validation("bad".into()), StatusCode::BAD_REQUEST),
             (AppError::Conflict("dup".into()), StatusCode::CONFLICT),
             (

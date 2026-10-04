@@ -8,7 +8,7 @@ use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
 use baze_app::server::{ServerOptions, serve, shutdown_signal};
 use geocoding::PhotonGeocodingService;
-use hazards::HazardService;
+use hazards::{HazardPolicy, HazardService};
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use std::sync::Arc;
@@ -79,8 +79,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let hazard_service = Arc::new(HazardService::new(
         pool.clone(),
-        config.confirmation_threshold,
-        config.default_ttl_hours,
+        HazardPolicy {
+            confirmation_threshold: config.confirmation_threshold,
+            default_ttl_hours: config.default_ttl_hours,
+            min_account_age: chrono::Duration::seconds(config.account_min_age_secs as i64),
+            reports_per_day: i64::from(config.reports_per_account_per_day),
+            votes_per_day: i64::from(config.votes_per_account_per_day),
+        },
         // Keys the tags of voter networks (ADR-0008); a distinct label separates it from token MACs.
         config.jwt_secret.as_bytes(),
         Arc::new(realtime_service.clone()),

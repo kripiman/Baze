@@ -204,9 +204,10 @@ pub async fn list_hazards_handler(
         (status = 201, description = "Hazard report created", body = Hazard),
         (status = 400, description = "Validation failed", body = ErrorResponse),
         (status = 401, description = "Unauthorized caller", body = ErrorResponse),
+        (status = 403, description = "The account is too new to report a road closure", body = ErrorResponse),
         (status = 413, description = "Request body too large", body = ErrorResponse),
         (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
-        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 429, description = "Rate limit or daily report limit exceeded", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse),
         (status = 503, description = "The database is busy; retry later", body = ErrorResponse)
     ),
@@ -240,11 +241,13 @@ pub async fn create_hazard_handler(
         (status = 200, description = "Vote registered and hazard updated", body = Hazard),
         (status = 400, description = "Invalid vote payload", body = ErrorResponse),
         (status = 401, description = "Unauthorized caller", body = ErrorResponse),
+        (status = 403, description = "The account is too new to vote", body = ErrorResponse),
         (status = 404, description = "Hazard not found or expired", body = ErrorResponse),
         (status = 413, description = "Request body too large", body = ErrorResponse),
         (status = 415, description = "Content-Type must be application/json", body = ErrorResponse),
-        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
-        (status = 500, description = "Internal error", body = ErrorResponse)
+        (status = 429, description = "Rate limit or daily vote limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+        (status = 503, description = "The database is busy; retry later", body = ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])

@@ -22,14 +22,23 @@ impl HazardNotifier for Recorder {
     }
 }
 
+/// Rules of the voting tests: no age gate and caps out of the way, so each test sees one rule.
+fn policy(threshold: i32) -> HazardPolicy {
+    HazardPolicy {
+        confirmation_threshold: threshold,
+        default_ttl_hours: 24,
+        min_account_age: Duration::zero(),
+        reports_per_day: 1000,
+        votes_per_day: 5000,
+    }
+}
+
 fn service(pool: &PgPool, threshold: i32) -> HazardService {
-    HazardService::new(
-        pool.clone(),
-        threshold,
-        24,
-        SECRET,
-        Arc::new(Recorder::default()),
-    )
+    service_with(pool, policy(threshold))
+}
+
+fn service_with(pool: &PgPool, policy: HazardPolicy) -> HazardService {
+    HazardService::new(pool.clone(), policy, SECRET, Arc::new(Recorder::default()))
 }
 
 async fn account(pool: &PgPool) -> AccountContext {
@@ -40,6 +49,24 @@ async fn account(pool: &PgPool) -> AccountContext {
             .fetch_one(pool)
             .await
             .unwrap();
+    AccountContext {
+        account_id,
+        created_at,
+    }
+}
+
+/// An account that was created `minutes` ago.
+async fn account_aged(pool: &PgPool, minutes: i32) -> AccountContext {
+    let account_id = Uuid::new_v4();
+    let created_at = sqlx::query_scalar(
+        "INSERT INTO accounts (id, created_at) VALUES ($1, now() - make_interval(mins => $2)) \
+         RETURNING created_at",
+    )
+    .bind(account_id)
+    .bind(minutes)
+    .fetch_one(pool)
+    .await
+    .unwrap();
     AccountContext {
         account_id,
         created_at,
@@ -88,7 +115,8 @@ async fn insert_hazard(
          VALUES ($1, $2, $3, \
                  CASE WHEN $3 IN ('glass', 'pothole', 'debris') THEN 'warning' ELSE 'blocking' END, \
                  $4, 1, 0, ST_SetSRID(ST_MakePoint($5, $6), 4326), \
-                 now() - interval '2 hours', now() + make_interval(hours => $7))",
+                 LEAST(now() - interval '2 hours', now() + make_interval(hours => $7) - interval '1 hour'), \
+                 now() + make_interval(hours => $7))",
     )
     .bind(id)
     .bind(creator)
@@ -619,7 +647,7 @@ async fn ballots_keep_a_keyed_tag_of_the_network_and_never_the_address(pool: PgP
 #[sqlx::test(migrations = "../../migrations")]
 async fn creating_and_voting_broadcast_the_stored_state(pool: PgPool) {
     let recorder = Arc::new(Recorder::default());
-    let service = HazardService::new(pool.clone(), 3, 24, SECRET, recorder.clone());
+    let service = HazardService::new(pool.clone(), policy(3), SECRET, recorder.clone());
     let hazard = service
         .create_hazard(&account(&pool).await, &blocking_report(), ip("10.1.0.1"))
         .await
@@ -959,6 +987,301 @@ async fn a_bad_corridor_is_a_validation_error_and_never_reaches_sql(pool: PgPool
     assert!(matches!(err, AppError::Validation(_)), "{err:?}");
 }
 
+// ------------------------------------------------------------------ abuse limits (ADR-0007)
+
+fn strict(min_age_minutes: i64, reports: i64, votes: i64) -> HazardPolicy {
+    HazardPolicy {
+        min_account_age: Duration::minutes(min_age_minutes),
+        reports_per_day: reports,
+        votes_per_day: votes,
+        ..policy(3)
+    }
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_new_account_can_report_a_warning_but_not_a_road_closure(pool: PgPool) {
+    let service = service_with(&pool, strict(10, 30, 200));
+    let newcomer = account(&pool).await;
+
+    let warning = service
+        .create_hazard(&newcomer, &report(HazardCategory::Glass), ip("10.1.0.1"))
+        .await;
+    let closure = service
+        .create_hazard(&newcomer, &blocking_report(), ip("10.1.0.1"))
+        .await
+        .unwrap_err();
+
+    assert!(warning.is_ok());
+    assert!(matches!(closure, AppError::Forbidden(_)), "{closure:?}");
+    let (stored,): (i64,) = sqlx::query_as("SELECT count(*) FROM hazards")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 1, "the refused closure left nothing behind");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_age_gate_opens_exactly_when_the_account_is_old_enough(pool: PgPool) {
+    let service = service_with(&pool, strict(10, 30, 200));
+    let hazard = insert_hazard(
+        &pool,
+        account(&pool).await.account_id,
+        "road_closed",
+        "unconfirmed",
+        (-70.65, -33.45),
+        5,
+    )
+    .await;
+
+    let too_young = account_aged(&pool, 9).await;
+    let err = service
+        .vote_hazard(hazard, &too_young, Vote::Up, ip("10.2.0.1"))
+        .await
+        .unwrap_err();
+    let old_enough = account_aged(&pool, 11).await;
+    let voted = service
+        .vote_hazard(hazard, &old_enough, Vote::Up, ip("10.3.0.1"))
+        .await;
+
+    match err {
+        AppError::Forbidden(message) => assert!(message.contains("1 minute"), "{message}"),
+        other => panic!("expected Forbidden, got {other:?}"),
+    }
+    assert!(voted.is_ok());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn fresh_accounts_cannot_confirm_a_closure_between_them(pool: PgPool) {
+    let service = service_with(&pool, strict(10, 30, 200));
+    let reporter = account_aged(&pool, 60).await;
+    let hazard = service
+        .create_hazard(&reporter, &blocking_report(), ip("203.0.113.1"))
+        .await
+        .unwrap();
+
+    // Three brand new accounts on three networks: the Sybil attack the age gate exists for.
+    for n in 2..=4 {
+        let err = service
+            .vote_hazard(
+                hazard.id,
+                &account(&pool).await,
+                Vote::Up,
+                ip(&format!("203.0.{n}.1")),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    let stored = assert_consistent(&pool, hazard.id).await;
+    assert_eq!(stored.upvotes, 1);
+    assert_eq!(stored.status, HazardStatus::Unconfirmed);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_daily_report_cap_is_per_account_and_rolls_over_after_24_hours(pool: PgPool) {
+    let service = service_with(&pool, strict(0, 2, 200));
+    let reporter = account(&pool).await;
+    let other = account(&pool).await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        ids.push(
+            service
+                .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+
+    let err = service
+        .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::RateLimited(_)), "{err:?}");
+    // Someone else is unaffected.
+    assert!(
+        service
+            .create_hazard(&other, &report(HazardCategory::Glass), ip("10.1.0.1"))
+            .await
+            .is_ok()
+    );
+
+    // 25 hours later the first report no longer counts.
+    sqlx::query(
+        "UPDATE hazards SET created_at = now() - interval '25 hours', \
+                            expires_at = now() + interval '1 hour' WHERE id = $1",
+    )
+    .bind(ids[0])
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        service
+            .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+            .await
+            .is_ok()
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn the_daily_vote_cap_counts_first_ballots_on_other_peoples_reports_only(pool: PgPool) {
+    let service = service_with(&pool, strict(0, 100, 2));
+    let author = account(&pool).await.account_id;
+    let mut hazards = Vec::new();
+    for lon in [-70.65, -70.651, -70.652] {
+        hazards.push(
+            insert_hazard(
+                &pool,
+                author,
+                "road_closed",
+                "unconfirmed",
+                (lon, -33.45),
+                5,
+            )
+            .await,
+        );
+    }
+    let voter = account(&pool).await;
+
+    for (i, hazard) in hazards.iter().take(2).enumerate() {
+        service
+            .vote_hazard(*hazard, &voter, Vote::Up, ip(&format!("10.{}.0.1", i + 2)))
+            .await
+            .unwrap();
+    }
+    let err = service
+        .vote_hazard(hazards[2], &voter, Vote::Up, ip("10.9.0.1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::RateLimited(_)), "{err:?}");
+
+    // At the cap, changing a vote already cast is still allowed: it adds no ballot...
+    let flipped = service
+        .vote_hazard(hazards[0], &voter, Vote::Down, ip("10.2.0.1"))
+        .await
+        .unwrap();
+    assert_eq!(flipped.downvotes, 1);
+    // ...and neither filing a report nor voting on one's own report spends the quota.
+    let own = service
+        .create_hazard(&voter, &report(HazardCategory::Glass), ip("10.2.0.1"))
+        .await
+        .unwrap();
+    assert!(
+        service
+            .vote_hazard(own.id, &voter, Vote::Up, ip("10.2.0.1"))
+            .await
+            .is_ok()
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn parallel_reports_from_one_account_cannot_overshoot_the_cap(pool: PgPool) {
+    let service = service_with(&pool, strict(0, 5, 200));
+    let reporter = account(&pool).await;
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let service = service.clone();
+        tasks.spawn(async move {
+            service
+                .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+                .await
+        });
+    }
+    let (mut created, mut refused) = (0, 0);
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap() {
+            Ok(_) => created += 1,
+            Err(AppError::RateLimited(_)) => refused += 1,
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    assert_eq!((created, refused), (5, 15));
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn parallel_votes_from_one_account_cannot_overshoot_the_cap(pool: PgPool) {
+    let service = service_with(&pool, strict(0, 100, 5));
+    let author = account(&pool).await.account_id;
+    let mut hazards = Vec::new();
+    for i in 0..20 {
+        hazards.push(
+            insert_hazard(
+                &pool,
+                author,
+                "road_closed",
+                "unconfirmed",
+                (-70.65 - f64::from(i) * 0.0001, -33.45),
+                5,
+            )
+            .await,
+        );
+    }
+    let voter = account(&pool).await;
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for (i, hazard) in hazards.into_iter().enumerate() {
+        let service = service.clone();
+        tasks.spawn(async move {
+            service
+                .vote_hazard(hazard, &voter, Vote::Up, ip(&format!("10.{}.0.1", i + 1)))
+                .await
+        });
+    }
+    let mut accepted = 0;
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap() {
+            Ok(_) => accepted += 1,
+            Err(AppError::RateLimited(_)) => {}
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    assert_eq!(accepted, 5);
+    let (ballots,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM hazard_votes WHERE account_id = $1")
+            .bind(voter.account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ballots, 5);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn a_short_ttl_does_not_hand_the_daily_quota_back_early(pool: PgPool) {
+    let service = service_with(
+        &pool,
+        HazardPolicy {
+            default_ttl_hours: 1,
+            ..strict(0, 1, 200)
+        },
+    );
+    let reporter = account(&pool).await;
+    let first = service
+        .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+        .await
+        .unwrap();
+
+    // The report expires after an hour, and the purge runs.
+    sqlx::query(
+        "UPDATE hazards SET created_at = now() - interval '3 hours', \
+                            expires_at = now() - interval '2 hours' WHERE id = $1",
+    )
+    .bind(first.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    service.purge_expired().await.unwrap();
+
+    let err = service
+        .create_hazard(&reporter, &report(HazardCategory::Glass), ip("10.1.0.1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::RateLimited(_)), "{err:?}");
+}
+
 // ------------------------------------------------------------------ purge and persistence
 
 #[sqlx::test(migrations = "../../migrations")]
@@ -975,7 +1298,7 @@ async fn test_purge_expired_hazards(pool: PgPool) {
                               downvotes, geom, created_at, expires_at) \
          SELECT gen_random_uuid(), $1, 'glass', 'warning', 'confirmed', 1, 0, \
                 ST_SetSRID(ST_MakePoint(-70.65, -33.45), 4326), \
-                now() - interval '2 days', now() - interval '1 day' \
+                now() - interval '4 days', now() - interval '3 days' \
          FROM generate_series(1, $2::int)",
     )
     .bind(creator.account_id)
@@ -984,6 +1307,16 @@ async fn test_purge_expired_hazards(pool: PgPool) {
     .await
     .unwrap();
     let expired_with_ballot = insert_hazard(
+        &pool,
+        creator.account_id,
+        "glass",
+        "confirmed",
+        (-70.65, -33.45),
+        -72,
+    )
+    .await;
+    // Expired an hour ago: gone for readers, but kept for a day so the daily caps still see it.
+    let recently_expired = insert_hazard(
         &pool,
         creator.account_id,
         "glass",
@@ -1010,7 +1343,13 @@ async fn test_purge_expired_hazards(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(left, 1);
+    assert_eq!(left, 2, "the live report and the one expired an hour ago");
+    let (kept,): (i64,) = sqlx::query_as("SELECT count(*) FROM hazards WHERE id = $1")
+        .bind(recently_expired)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
     let (orphans,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM hazard_votes WHERE hazard_id = $1")
             .bind(expired_with_ballot)

@@ -275,6 +275,16 @@
               }
             }
           },
+          "403": {
+            "description": "The account is too new to report a road closure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body too large",
             "content": {
@@ -296,7 +306,7 @@
             }
           },
           "429": {
-            "description": "Rate limit exceeded",
+            "description": "Rate limit or daily report limit exceeded",
             "content": {
               "application/json": {
                 "schema": {
@@ -392,6 +402,16 @@
               }
             }
           },
+          "403": {
+            "description": "The account is too new to vote",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Hazard not found or expired",
             "content": {
@@ -423,7 +443,7 @@
             }
           },
           "429": {
-            "description": "Rate limit exceeded",
+            "description": "Rate limit or daily vote limit exceeded",
             "content": {
               "application/json": {
                 "schema": {
@@ -434,6 +454,16 @@
           },
           "500": {
             "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is busy; retry later",
             "content": {
               "application/json": {
                 "schema": {

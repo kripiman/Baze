@@ -17,7 +17,7 @@ pub use rules::evaluate_hazard_status;
 pub use voter_net::{TAG_LEN, VoterNetKey};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use shared::{
     AccountContext, AppError, BoundingBox, CorridorHazards, CreateHazardRequest, GeoJsonLineString,
     GeoJsonPoint, GeoJsonPolygon, Hazard, HazardCategory, HazardNotifier, HazardStatus,
@@ -43,6 +43,12 @@ pub const MAX_CORRIDOR_BUFFER_METERS: f64 = 5_000.0;
 
 /// Expired reports removed per statement, so one purge never runs into the statement timeout.
 const PURGE_BATCH: i64 = 1_000;
+
+/// Window of the daily caps.
+const CAP_WINDOW_HOURS: i32 = 24;
+
+/// How long an expired report is kept: the caps count stored rows, so they must outlive the window.
+const PURGE_GRACE_HOURS: i32 = CAP_WINDOW_HOURS;
 
 /// Longest a report can live; guards the TTL against nonsense values.
 const MAX_TTL_HOURS: i64 = 24 * 365;
@@ -107,45 +113,113 @@ fn store_error(error: sqlx::Error) -> AppError {
     }
 }
 
+/// The rules a [`HazardService`] enforces. Everything here is configuration, none of it is a secret.
+#[derive(Debug, Clone)]
+pub struct HazardPolicy {
+    /// Net votes needed to confirm a blocking report, or to retire any report.
+    pub confirmation_threshold: i32,
+    /// How long a report lives (kept within one hour and one year).
+    pub default_ttl_hours: i64,
+    /// An account younger than this cannot vote or report a road closure.
+    pub min_account_age: Duration,
+    /// New reports one account may file in 24 hours.
+    pub reports_per_day: i64,
+    /// Votes on other people's reports one account may cast in 24 hours.
+    pub votes_per_day: i64,
+}
+
+impl Default for HazardPolicy {
+    fn default() -> Self {
+        Self {
+            confirmation_threshold: 3,
+            default_ttl_hours: 24,
+            min_account_age: Duration::seconds(600),
+            reports_per_day: 30,
+            votes_per_day: 200,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HazardService {
     pool: PgPool,
     confirmation_threshold: i32,
     default_ttl_hours: i32,
+    min_account_age: Duration,
+    reports_per_day: i64,
+    votes_per_day: i64,
     net_key: VoterNetKey,
     notifier: Arc<dyn HazardNotifier>,
 }
 
 impl HazardService {
     /// `voter_net_secret` keys the tags of voter networks (see [`VoterNetKey`]); it is a secret of
-    /// the server, never stored. `default_ttl_hours` is kept within one hour and one year.
+    /// the server, never stored.
     pub fn new(
         pool: PgPool,
-        confirmation_threshold: i32,
-        default_ttl_hours: i64,
+        policy: HazardPolicy,
         voter_net_secret: &[u8],
         notifier: Arc<dyn HazardNotifier>,
     ) -> Self {
         Self {
             pool,
-            confirmation_threshold,
-            default_ttl_hours: i32::try_from(default_ttl_hours.clamp(1, MAX_TTL_HOURS))
+            confirmation_threshold: policy.confirmation_threshold,
+            default_ttl_hours: i32::try_from(policy.default_ttl_hours.clamp(1, MAX_TTL_HOURS))
                 .expect("clamped to a year of hours"),
+            min_account_age: policy.min_account_age,
+            reports_per_day: policy.reports_per_day,
+            votes_per_day: policy.votes_per_day,
             net_key: VoterNetKey::new(voter_net_secret),
             notifier,
         }
     }
 
-    /// Removes expired reports (and, by cascade, their votes), and returns how many went.
-    /// Reads already ignore expired rows, so this only reclaims space (AGENTS §4.4).
+    /// Accounts are free and anonymous, so a brand new one proves nothing. Letting it vote or close
+    /// roads would let an attacker mint the three accounts a confirmation needs in one afternoon.
+    fn require_established(&self, account: &AccountContext, action: &str) -> Result<(), AppError> {
+        let age = Utc::now() - account.created_at;
+        if age >= self.min_account_age {
+            return Ok(());
+        }
+        let wait = (self.min_account_age - age).num_seconds().max(0) as u64;
+        let minutes = wait.div_ceil(60).max(1);
+        Err(AppError::Forbidden(format!(
+            "This account is too new to {action}. Try again in {minutes} minute(s)."
+        )))
+    }
+
+    /// Serialises the writes of one account until the transaction ends, so two concurrent requests
+    /// cannot both pass the daily-cap check. The lock is always taken before any row lock, in every
+    /// code path, which keeps lock order consistent (no deadlocks).
+    async fn lock_account(
+        tx: &mut Transaction<'_, Postgres>,
+        account_id: Uuid,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('baze:account:' || $1::text, 0))",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    /// Removes reports that expired more than [`PURGE_GRACE_HOURS`] ago (and, by cascade, their votes),
+    /// and returns how many went. Reads already ignore expired rows, so this only reclaims space
+    /// (AGENTS §4.4). The grace is the length of the daily-cap window: the caps count stored rows,
+    /// so a row must outlive the window or a short TTL would hand the quota back early.
     pub async fn purge_expired(&self) -> Result<u64, AppError> {
         let mut total = 0;
         loop {
             let removed = sqlx::query(
                 "DELETE FROM hazards WHERE id IN \
-                 (SELECT id FROM hazards WHERE expires_at <= now() ORDER BY expires_at LIMIT $1)",
+                 (SELECT id FROM hazards \
+                  WHERE expires_at <= now() - make_interval(hours => $2) \
+                  ORDER BY expires_at LIMIT $1)",
             )
             .bind(PURGE_BATCH)
+            .bind(PURGE_GRACE_HOURS)
             .execute(&self.pool)
             .await
             .map_err(store_error)?
@@ -285,6 +359,10 @@ impl HazardStore for HazardService {
         client_ip: IpAddr,
     ) -> Result<Hazard, AppError> {
         let hazard_type = req.category.hazard_type();
+        // A warning only alerts; a blocking report can divert routes, so it needs an established account.
+        if hazard_type == HazardType::Blocking {
+            self.require_established(account, "report a road closure")?;
+        }
         // The reporter's own vote is the first one and always counts: nobody else has voted yet.
         let status = evaluate_hazard_status(hazard_type, 1, 0, self.confirmation_threshold);
         let location = serde_json::to_string(&req.location)
@@ -292,6 +370,22 @@ impl HazardStore for HazardService {
         let tag = self.net_key.tag(VoterNetwork::from_ip(client_ip));
 
         let mut tx = self.pool.begin().await.map_err(store_error)?;
+        Self::lock_account(&mut tx, account.account_id).await?;
+        let filed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM hazards \
+             WHERE creator_account_id = $1 AND created_at > now() - make_interval(hours => $2)",
+        )
+        .bind(account.account_id)
+        .bind(CAP_WINDOW_HOURS)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if filed >= self.reports_per_day {
+            return Err(AppError::RateLimited(format!(
+                "Daily limit of {} reports reached. Try again later.",
+                self.reports_per_day
+            )));
+        }
         let row: HazardRow = sqlx::query_as(CREATE_SQL)
             .bind(Uuid::new_v4())
             .bind(account.account_id)
@@ -328,10 +422,12 @@ impl HazardStore for HazardService {
         vote: Vote,
         client_ip: IpAddr,
     ) -> Result<Hazard, AppError> {
+        self.require_established(account, "vote")?;
         let tag = self.net_key.tag(VoterNetwork::from_ip(client_ip));
         let not_found = || AppError::NotFound(format!("Hazard {hazard_id} not found"));
 
         let mut tx = self.pool.begin().await.map_err(store_error)?;
+        Self::lock_account(&mut tx, account.account_id).await?;
         // The lock serialises every vote on this report. An expired report no longer exists for
         // voters; neither does one the community has retired.
         let locked: Option<(String, String)> = sqlx::query_as(
@@ -347,6 +443,35 @@ impl HazardStore for HazardService {
             .ok_or_else(|| AppError::Internal(format!("hazard {hazard_id}: type {hazard_type}")))?;
         if HazardStatus::from_db(&status) == Some(HazardStatus::Resolved) {
             return Err(not_found());
+        }
+
+        // Changing a vote already cast adds nothing, so only a first ballot on someone else's
+        // report spends the daily quota (the reporter's own ballot never does).
+        let already_voted: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM hazard_votes WHERE hazard_id = $1 AND account_id = $2)",
+        )
+        .bind(hazard_id)
+        .bind(account.account_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if !already_voted {
+            let cast: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM hazard_votes v JOIN hazards h ON h.id = v.hazard_id \
+                 WHERE v.account_id = $1 AND h.creator_account_id <> $1 \
+                   AND v.created_at > now() - make_interval(hours => $2)",
+            )
+            .bind(account.account_id)
+            .bind(CAP_WINDOW_HOURS)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if cast >= self.votes_per_day {
+                return Err(AppError::RateLimited(format!(
+                    "Daily limit of {} votes reached. Try again later.",
+                    self.votes_per_day
+                )));
+            }
         }
 
         let hazard = self
@@ -489,7 +614,16 @@ mod tests {
         }
         let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
         let ttl = |hours: i64| {
-            HazardService::new(pool.clone(), 3, hours, b"k", Arc::new(Quiet)).default_ttl_hours
+            HazardService::new(
+                pool.clone(),
+                HazardPolicy {
+                    default_ttl_hours: hours,
+                    ..HazardPolicy::default()
+                },
+                b"k",
+                Arc::new(Quiet),
+            )
+            .default_ttl_hours
         };
         assert_eq!(ttl(0), 1);
         assert_eq!(ttl(-5), 1);

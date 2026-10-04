@@ -4,12 +4,14 @@
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "AGPL-3.0-or-later"
 authors = ["Gabriel Piñones"]
 repository = "https://github.com/kripiman/Baze"
+publish = false
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/app",
     "crates/shared",
@@ -34,14 +36,16 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 utoipa = { version = "5.3", features = ["axum_extras", "chrono", "uuid", "repr"] }
-utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+# `vendored` embeds the Swagger UI bundle shipped inside the crate, so the build never downloads it from GitHub.
+utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
 uuid = { version = "1.14", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# No TLS stack on purpose: the backend only talks plain HTTP to internal services (Valhalla, Photon).
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 thiserror = "2.0"
 async-trait = "0.1"
 futures-util = "0.3"

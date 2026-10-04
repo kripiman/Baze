@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+# Keep in sync with the Dockerfile and .github/workflows/backend.yml
+# (verified by scripts/check-toolchain-sync.sh).
 [toolchain]
-channel = "stable"
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]

@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUT_DIR="${DATA_DIR}/out"
 PHOTON_DIR="${OUT_DIR}/photon"
-INPUT_PBF="${OUT_DIR}/extract.osm.pbf"
 
 mkdir -p "${PHOTON_DIR}"
 

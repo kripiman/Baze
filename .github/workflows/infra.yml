@@ -1,0 +1,173 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Infrastructure CI
+
+on:
+  push:
+    paths:
+      - 'infra/**'
+      - 'backend/Dockerfile'
+      - 'backend/.dockerignore'
+      - 'scripts/compose-check.sh'
+      - 'scripts/compose_policy.py'
+      - 'scripts/gen-env.sh'
+      - 'data/scripts/**'
+      - '.github/workflows/infra.yml'
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'backend/Dockerfile'
+      - 'backend/.dockerignore'
+      - 'scripts/compose-check.sh'
+      - 'scripts/compose_policy.py'
+      - 'scripts/gen-env.sh'
+      - 'data/scripts/**'
+      - '.github/workflows/infra.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Compose, Caddyfile and shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate the Compose stack and its security invariants
+        run: bash scripts/compose-check.sh
+
+      - name: Validate the Caddyfile
+        run: |
+          image="$(awk '/image: caddy:/ {print $2; exit}' infra/compose.yaml)"
+          echo "Validating with ${image}"
+          docker run --rm -e DOMAIN=example.test \
+            -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            "${image}" caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/*.sh data/scripts/*.sh
+
+  smoke:
+    name: Build and run the stack
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMPOSE: docker compose -f infra/compose.yaml --env-file infra/.env
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prepare a production-mode environment
+        run: |
+          mkdir -p data/out/public
+          echo "probe" > data/out/public/probe.txt
+          bash scripts/gen-env.sh
+          sed -i 's/^ENVIRONMENT=.*/ENVIRONMENT=production/' infra/.env
+          echo "GIT_COMMIT_HASH=${GITHUB_SHA}" >> infra/.env
+
+      - name: Build the backend image
+        run: ${COMPOSE} build backend
+
+      - name: Inspect the image
+        run: |
+          image="$(${COMPOSE} images -q backend)"
+          echo "image size: $(docker image inspect --format '{{.Size}}' "$image") bytes"
+          user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+          [ "$user" = "baze:baze" ] || { echo "unexpected user: $user"; exit 1; }
+          [ "$(docker image inspect --format '{{if .Config.Healthcheck}}yes{{end}}' "$image")" = "yes" ] \
+            || { echo "image has no HEALTHCHECK"; exit 1; }
+          docker run --rm --entrypoint ldd "$image" /usr/local/bin/baze-server | tee /tmp/ldd.txt
+          if grep -qi ssl /tmp/ldd.txt; then echo "the binary links against OpenSSL"; exit 1; fi
+          docker run --rm --entrypoint cat "$image" /etc/passwd | grep '^baze:' | tee /tmp/passwd.txt
+          grep -q ':/usr/sbin/nologin$' /tmp/passwd.txt || { echo "baze has a login shell"; exit 1; }
+
+      - name: Start the production stack
+        run: ${COMPOSE} up -d --wait --wait-timeout 240 postgis backend caddy
+
+      - name: Only Caddy is reachable from the host
+        run: |
+          if curl -sS --max-time 3 -o /dev/null http://127.0.0.1:8080/health; then
+            echo "the backend is published on the host in the production file"; exit 1
+          fi
+          if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+            echo "PostgreSQL is published on the host in the production file"; exit 1
+          fi
+          echo "backend and PostgreSQL are not reachable from the host, as intended"
+
+      - name: Check behaviour through Caddy
+        run: |
+          curl_tls() { curl -sS --max-time 15 -k --resolve localhost:443:127.0.0.1 "$@"; }
+          status() { curl_tls -o /dev/null -w '%{http_code}' "$@"; }
+
+          curl_tls -f https://localhost/health
+          echo
+
+          commit="$(curl_tls -f https://localhost/source | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "/source reports '$commit', expected $GITHUB_SHA"; exit 1; }
+
+          [ "$(status https://localhost/swagger-ui/)" = "404" ] || { echo "Swagger UI is public"; exit 1; }
+          [ "$(status https://localhost/api-docs/openapi.json)" = "404" ] || { echo "openapi.json is public"; exit 1; }
+
+          [ "$(status https://localhost/static/probe.txt)" = "200" ] || { echo "static file not served"; exit 1; }
+          [ "$(status https://localhost/static/)" != "200" ] || { echo "directory listing is enabled"; exit 1; }
+
+          code="$(head -c 20000 /dev/zero | curl_tls -X POST -H 'Content-Type: application/json' --data-binary @- -o /dev/null -w '%{http_code}' https://localhost/api/v1/hazards)"
+          [ "$code" = "413" ] || { echo "oversized body answered $code, expected 413"; exit 1; }
+
+          curl_tls -sI https://localhost/health | grep -i '^strict-transport-security' >/dev/null \
+            || { echo "missing HSTS header"; exit 1; }
+
+      - name: Neither Caddy nor the backend log query strings
+        run: |
+          curl_tls() { curl -sS --max-time 15 -k --resolve localhost:443:127.0.0.1 "$@"; }
+          curl_tls -o /dev/null "https://localhost/api/v1/hazards?min_lon=-70.7&min_lat=-33.5&max_lon=-70.6&max_lat=-33.4&marker=QUERY_MARKER_7f3a"
+          curl_tls -o /dev/null "https://localhost/api/v1/geocoding/search?q=SEARCH_TEXT_9c1d"
+          sleep 2
+          logs="$(docker logs baze-caddy 2>&1; docker logs baze-backend 2>&1)"
+          if echo "$logs" | grep -E 'QUERY_MARKER_7f3a|SEARCH_TEXT_9c1d'; then
+            echo "a query string reached the logs"; exit 1
+          fi
+          if docker logs baze-caddy 2>&1 | grep -q 'handled request'; then
+            echo "Caddy is writing access logs"; exit 1
+          fi
+
+      - name: Containers are hardened
+        run: |
+          for c in baze-backend baze-caddy baze-postgis; do
+            ro="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$c")"
+            caps="$(docker inspect --format '{{.HostConfig.CapDrop}}' "$c")"
+            sec="$(docker inspect --format '{{.HostConfig.SecurityOpt}}' "$c")"
+            echo "$c readonly=$ro cap_drop=$caps security_opt=$sec"
+            [ "$ro" = "true" ] || { echo "$c: root filesystem is writable"; exit 1; }
+            echo "$caps" | grep -q ALL || { echo "$c: capabilities not dropped"; exit 1; }
+            echo "$sec" | grep -q no-new-privileges || { echo "$c: no-new-privileges missing"; exit 1; }
+          done
+
+      - name: The development overlay publishes the backend on loopback only
+        run: |
+          docker compose -f infra/compose.yaml -f infra/compose.dev.yaml --env-file infra/.env \
+            up -d --wait --wait-timeout 240 postgis backend
+          curl -fsS --max-time 5 http://127.0.0.1:8080/health
+          echo
+          published="$(docker port baze-backend 8080/tcp)"
+          echo "baze-backend 8080 -> ${published}"
+          echo "${published}" | grep -q '^127.0.0.1:' || { echo "the backend is not bound to loopback"; exit 1; }
+
+      - name: Show container state on failure
+        if: failure()
+        run: |
+          ${COMPOSE} ps -a || true
+          ${COMPOSE} logs --no-color --tail 80 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f infra/compose.yaml -f infra/compose.dev.yaml --env-file infra/.env down -v || true

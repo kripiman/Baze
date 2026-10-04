@@ -9,8 +9,8 @@ use crate::rate_limit::{RateLimiter, rate_limit_api_middleware, rate_limit_signu
 use auth::{AuthResponse, AuthService};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Path, Query, State},
+    http::{Method, Request, StatusCode, header},
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
@@ -20,9 +20,16 @@ use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use shared::{
     BoundingBox, CreateHazardRequest, GeocodingItem, GeocodingProvider, GeocodingQuery, Hazard,
-    HazardVoteRequest, RouteRequest, RouteResponse,
+    HazardVoteRequest, MAX_LIST_BBOX_SPAN_DEGREES, MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest,
+    RouteResponse,
 };
 use std::{sync::Arc, time::Duration};
+use tower::limit::GlobalConcurrencyLimitLayer;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
+};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
@@ -36,6 +43,10 @@ pub struct AppState {
     pub realtime_service: RealtimeService,
     pub rate_limiter: RateLimiter,
 }
+
+/// Largest request body any endpoint accepts. The biggest legitimate payload is a hazard report
+/// (a point plus at most 500 characters of text), far below 2 KiB; the rest is slack.
+pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
 pub fn create_router(state: Arc<AppState>) -> Router {
     let open_routes = Router::new()
@@ -63,14 +74,57 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             rate_limit_api_middleware,
         ));
 
-    open_routes
-        .merge(auth_routes)
-        .merge(api_routes)
-        .merge(
+    let mut router = open_routes.merge(auth_routes).merge(api_routes);
+
+    // The contract is committed in contracts/openapi.json; the interactive docs are for development.
+    if state.config.enable_api_docs {
+        router = router.merge(
             SwaggerUi::new("/swagger-ui")
                 .url("/api-docs/openapi.json", crate::openapi::ApiDoc::openapi()),
-        )
+        );
+    }
+
+    router
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
+}
+
+/// The router wrapped with everything that protects the process: a per-request deadline, a global
+/// cap on in-flight requests, request tracing that never records query strings (they carry
+/// bounding boxes and search text) and, in development only, permissive CORS.
+///
+/// Layers listed last run first. The deadline and the cap apply until a response is produced, so
+/// an SSE stream (whose response is produced immediately and then streams) is not cut by them.
+pub fn build_app(state: Arc<AppState>) -> Router {
+    let timeout = Duration::from_secs(state.config.request_timeout_secs);
+    let max_in_flight = state.config.max_concurrent_requests;
+    let development = state.config.is_development();
+
+    let mut app = create_router(state)
+        .layer(GlobalConcurrencyLimitLayer::new(max_in_flight))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            timeout,
+        ))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::info_span!(
+                    "http",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        );
+
+    if development {
+        app = app.layer(
+            CorsLayer::new()
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+                .allow_origin(Any),
+        );
+    }
+    app
 }
 
 #[utoipa::path(
@@ -138,6 +192,7 @@ pub async fn list_hazards_handler(
     Query(bbox): Query<BoundingBox>,
 ) -> Result<AppJson<Vec<Hazard>>, HttpError> {
     bbox.validate()?;
+    bbox.validate_max_span(MAX_LIST_BBOX_SPAN_DEGREES)?;
     let hazards = state.hazard_service.list_active_hazards(&bbox).await?;
     Ok(AppJson(hazards))
 }
@@ -276,6 +331,7 @@ pub async fn realtime_sse_handler(
     Query(bbox): Query<BoundingBox>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, HttpError> {
     bbox.validate()?;
+    bbox.validate_max_span(MAX_STREAM_BBOX_SPAN_DEGREES)?;
 
     let hazard_stream = state.realtime_service.stream_hazards(client_ip.0, bbox)?;
 

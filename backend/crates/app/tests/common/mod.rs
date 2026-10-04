@@ -14,13 +14,14 @@ use axum::{
 };
 use baze_app::config::AppConfig;
 use baze_app::rate_limit::RateLimiter;
-use baze_app::router::{AppState, create_router};
+use baze_app::router::{AppState, build_app};
 use geocoding::PhotonGeocodingService;
 use hazards::HazardService;
 use http_body_util::BodyExt;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use serde_json::{Value, json};
+use shared::GeocodingProvider;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -31,7 +32,18 @@ pub fn test_config() -> AppConfig {
 }
 
 pub fn test_app() -> Router {
-    let config = test_config();
+    test_app_with(test_config())
+}
+
+pub fn test_app_with(config: AppConfig) -> Router {
+    let geocoder =
+        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
+    test_app_with_geocoder(config, geocoder)
+}
+
+/// The geocoder is the one collaborator that is trivial to replace, which makes it the handle for
+/// simulating a slow or failing backing service.
+pub fn test_app_with_geocoder(config: AppConfig, geocoder: Arc<dyn GeocodingProvider>) -> Router {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://localhost/dummy")
         .expect("lazy pool");
@@ -49,15 +61,13 @@ pub fn test_app() -> Router {
             hazard_service.clone(),
         )
         .expect("routing client"),
-        geocoding_service: Arc::new(
-            PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"),
-        ),
+        geocoding_service: geocoder,
         rate_limiter: RateLimiter::new(),
         hazard_service,
         realtime_service,
         config,
     };
-    create_router(Arc::new(state))
+    build_app(Arc::new(state))
 }
 
 pub fn json_request(method: &str, uri: &str, token: Option<&str>, body: &Value) -> Request<Body> {

@@ -4,15 +4,14 @@
 use auth::AuthService;
 use baze_app::config::AppConfig;
 use baze_app::rate_limit::RateLimiter;
-use baze_app::router::{AppState, create_router};
+use baze_app::router::{AppState, build_app};
+use baze_app::server::{ServerOptions, serve, shutdown_signal};
 use geocoding::PhotonGeocodingService;
 use hazards::HazardService;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,34 +75,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter,
     });
 
-    let mut app = create_router(app_state).layer(TraceLayer::new_for_http());
-
-    // En desarrollo, permitir CORS amplio para prototipado rápido y emuladores
-    if config.is_development() {
-        let cors = CorsLayer::new()
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::OPTIONS,
-            ])
-            .allow_headers([
-                axum::http::header::AUTHORIZATION,
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::ACCEPT,
-            ])
-            .allow_origin(Any);
-        app = app.layer(cors);
-    }
+    let app = build_app(app_state);
 
     let addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("Baze API listening on http://{}", addr);
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    serve(listener, app, ServerOptions::default(), shutdown_signal()).await?;
+    tracing::info!("Baze API stopped");
 
     Ok(())
 }

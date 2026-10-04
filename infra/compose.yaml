@@ -46,6 +46,10 @@ services:
       - SOURCE_REPO_URL=${SOURCE_REPO_URL:-https://github.com/kripiman/Baze}
       - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-dev}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      # Vacío = valor por defecto del backend
+      - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-}
+      - MAX_CONCURRENT_REQUESTS=${MAX_CONCURRENT_REQUESTS:-}
+      - ENABLE_API_DOCS=${ENABLE_API_DOCS:-}
     networks:
       - internal
     depends_on:

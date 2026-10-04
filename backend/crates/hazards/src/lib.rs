@@ -13,6 +13,9 @@ use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
+/// A listing never returns more than this many reports (newest first).
+pub const MAX_LIST_RESULTS: usize = 500;
+
 /// Representa la subred evaluada para la legitimidad del voto (/24 para IPv4, /64 para IPv6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct VoterNetwork(IpNet);
@@ -219,12 +222,14 @@ impl HazardService {
             .read()
             .map_err(|_| AppError::Internal("Lock poisoned".into()))?;
 
-        let active: Vec<Hazard> = records
+        let mut active: Vec<Hazard> = records
             .values()
             .map(|r| &r.hazard)
             .filter(|h| h.expires_at > now && bbox.contains_point(&h.location))
             .cloned()
             .collect();
+        active.sort_unstable_by_key(|h| std::cmp::Reverse(h.created_at));
+        active.truncate(MAX_LIST_RESULTS);
 
         Ok(active)
     }
@@ -685,6 +690,37 @@ mod tests {
         assert_eq!(
             VoterNetwork::from_ip(v6).0.to_string(),
             "2001:db8:85a3::/64"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_is_capped_and_newest_first() {
+        let service = setup_service(3);
+        for _ in 0..(MAX_LIST_RESULTS + 100) {
+            let req = CreateHazardRequest {
+                category: HazardCategory::Pothole,
+                description: None,
+                location: GeoJsonPoint::new(-70.65, -33.45),
+            };
+            service
+                .create_hazard(Uuid::new_v4(), &req, ip("192.168.1.10"))
+                .await
+                .unwrap();
+        }
+        let bbox = BoundingBox {
+            min_lon: -70.7,
+            min_lat: -33.5,
+            max_lon: -70.6,
+            max_lat: -33.4,
+        };
+
+        let listed = service.list_active_hazards(&bbox).await.unwrap();
+
+        assert_eq!(listed.len(), MAX_LIST_RESULTS);
+        assert!(
+            listed
+                .windows(2)
+                .all(|w| w[0].created_at >= w[1].created_at)
         );
     }
 }

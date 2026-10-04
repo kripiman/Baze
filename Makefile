@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env openapi compose-check
+.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny backend-db-test toolchain-check dev-env openapi compose-check
 
 help:
 	@echo "Baze Monorepo Management"
@@ -15,6 +15,7 @@ help:
 	@echo "backend-test   : Run the Rust backend unit tests (no database needed)"
 	@echo "compose-check  : Validate the Docker Compose stack and its security invariants"
 	@echo "openapi        : Regenerate contracts/openapi.json from the backend code"
+	@echo "backend-db-test: Run all backend tests incl. PostgreSQL ones (needs DATABASE_URL, see CONTRIBUTING.md)"
 	@echo "backend-deny   : cargo-deny checks (bans, licenses, sources, advisories)"
 	@echo "toolchain-check: Verify that every Rust toolchain pin agrees"
 	@echo "android-build  : Compile Android application (assembleDebug)"
@@ -59,6 +60,12 @@ compose-check:
 
 openapi:
 	cd backend && cargo run --locked -q -p baze-app --bin export-openapi
+
+# Needs a disposable PostgreSQL+PostGIS server and a superuser (sqlx::test creates a database per test):
+#   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres make backend-db-test
+backend-db-test:
+	@test -n "$$DATABASE_URL" || { echo "Set DATABASE_URL to a disposable PostgreSQL+PostGIS superuser"; exit 1; }
+	cd backend && cargo test --locked --workspace --all-features
 
 backend-deny:
 	cd backend && cargo deny check

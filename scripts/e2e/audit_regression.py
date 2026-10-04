@@ -21,6 +21,7 @@ import hmac
 import http.client
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -34,8 +35,9 @@ DEFAULT_BINARY = os.path.join(REPO, "backend", "target", "debug", "baze-server")
 
 # The value the project used to ship in infra/.env.example. It is public, so every attacker knows it.
 PUBLIC_EXAMPLE_SECRET = "change_me_to_a_random_32_bytes_secret_key_in_production"
-STRONG_SECRET = "9f3c7d1e5a2b8c4d6e0f1a3b5c7d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d"
-DB_URL = "postgres://baze_app:Zq8xV2nL5mT9wR3kJ7pD@127.0.0.1:1/baze_db"  # lazy pool, never connected
+# Fixtures are generated on every run: no key-like literal is committed to the repository.
+STRONG_SECRET = secrets.token_hex(32)
+DB_URL = f"postgres://baze_app:{secrets.token_urlsafe(18)}@127.0.0.1:1/baze_db"  # lazy pool, never connected
 GOOD_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 POINT = {"type": "Point", "coordinates": [-70.65, -33.45]}

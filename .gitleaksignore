@@ -1,0 +1,6 @@
+# Known false positives in history that cannot be rewritten (the branch is shared).
+# Format: <commit>:<file>:<rule>:<line>
+#
+# The e2e regression script once carried a hard-coded hex string used as a throwaway JWT secret
+# for a local test server. It protects nothing; the script now generates its fixtures at runtime.
+c5eb8562741fd56c52846ffa07e7b530a04c2df9:scripts/e2e/audit_regression.py:generic-api-key:37

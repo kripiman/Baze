@@ -339,21 +339,34 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
-    const STRONG_SECRET: &str = "9f3c7d1e5a2b8c4d6e0f1a3b5c7d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d";
     const GOOD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
-    const REAL_DB: &str = "postgres://baze_app:Zq8xV2nL5mT9wR3kJ7pD@db:5432/baze_db";
+
+    // Fixtures are generated per test run so that no key-like literal lives in the repository.
+    fn strong_secret() -> String {
+        format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+    }
+
+    fn real_db() -> String {
+        format!(
+            "postgres://baze_app:{}@db:5432/baze_db",
+            Uuid::new_v4().simple()
+        )
+    }
 
     /// Minimal valid production environment; each test overrides what it wants to break.
     fn prod_vars<'a>(extra: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        let secret = strong_secret();
+        let database_url = real_db();
         move |key| {
             if let Some((_, v)) = extra.iter().find(|(k, _)| *k == key) {
                 return Some(v.to_string());
             }
             match key {
                 "ENVIRONMENT" => Some("production".into()),
-                "DATABASE_URL" => Some(REAL_DB.into()),
-                "JWT_SECRET" => Some(STRONG_SECRET.into()),
+                "DATABASE_URL" => Some(database_url.clone()),
+                "JWT_SECRET" => Some(secret.clone()),
                 "GIT_COMMIT_HASH" => Some(GOOD_COMMIT.into()),
                 _ => None,
             }
@@ -419,7 +432,7 @@ mod tests {
                 "DATABASE_URL",
                 "postgres://user:real_prod_password@db:5432/db",
             ),
-            ("JWT_SECRET", STRONG_SECRET),
+            ("JWT_SECRET", &strong_secret()),
             ("GIT_COMMIT_HASH", GOOD_COMMIT),
         ]))
         .unwrap();
@@ -589,12 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_random_hex_and_base64_secrets() {
-        for secret in [
-            STRONG_SECRET,
-            "Vq3o8Jm1ZK7yTn5uWb2xC9dL4hR6sEaP0fGiYtXz+Nk=",
-        ] {
-            AppConfig::from_lookup(prod_vars(&[("JWT_SECRET", secret)]))
+    fn accepts_random_hex_and_mixed_secrets() {
+        let hex = strong_secret();
+        let mixed = format!("{}-{}", Uuid::new_v4(), Uuid::new_v4().simple());
+        for secret in [hex, mixed] {
+            AppConfig::from_lookup(prod_vars(&[("JWT_SECRET", &secret)]))
                 .unwrap_or_else(|e| panic!("{secret} should be accepted: {e}"));
         }
     }

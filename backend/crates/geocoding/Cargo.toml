@@ -17,3 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+
+[dev-dependencies]
+# An in-process stand-in for Photon, so the client runs for real in the tests.
+axum.workspace = true
+tokio.workspace = true

@@ -63,9 +63,9 @@ impl AuthService {
         let id_str = parts
             .next()
             .ok_or_else(|| AppError::Unauthorized("Missing account ID in token".into()))?;
-        let sig_str = parts
-            .next()
-            .ok_or_else(|| AppError::Unauthorized("Missing cryptographic signature in token".into()))?;
+        let sig_str = parts.next().ok_or_else(|| {
+            AppError::Unauthorized("Missing cryptographic signature in token".into())
+        })?;
 
         if parts.next().is_some() {
             return Err(AppError::Unauthorized("Malformed token structure".into()));
@@ -98,7 +98,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_creation_and_validation() {
-        let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/dummy").unwrap();
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/dummy")
+            .unwrap();
         let secret = "very_secure_test_secret_key_at_least_32_bytes_long".to_string();
         let service = AuthService::new(pool, secret);
 
@@ -110,7 +112,10 @@ mod tests {
         assert_eq!(validated_id, auth_res.account_id);
 
         // Forged signature fails
-        let forged_token = format!("baze_anon_{}.00112233445566778899aabbccddeeff", auth_res.account_id);
+        let forged_token = format!(
+            "baze_anon_{}.00112233445566778899aabbccddeeff",
+            auth_res.account_id
+        );
         assert!(service.validate_token(&forged_token).await.is_err());
 
         // Tampered account id fails
@@ -120,7 +125,8 @@ mod tests {
         assert!(service.validate_token(&tampered_token).await.is_err());
 
         // Invalid hex signature fails
-        let invalid_hex_token = format!("baze_anon_{}.not_valid_hex_signature!", auth_res.account_id);
+        let invalid_hex_token =
+            format!("baze_anon_{}.not_valid_hex_signature!", auth_res.account_id);
         assert!(service.validate_token(&invalid_hex_token).await.is_err());
     }
 }

@@ -24,10 +24,7 @@ where
 {
     type Rejection = HttpError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state_ref: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state_ref: &S) -> Result<Self, Self::Rejection> {
         let state = Arc::<AppState>::from_ref(state_ref);
         let canonical_peer = parts
             .extensions
@@ -67,22 +64,29 @@ where
 {
     type Rejection = HttpError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state_ref: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state_ref: &S) -> Result<Self, Self::Rejection> {
         let state = Arc::<AppState>::from_ref(state_ref);
 
         let auth_header = parts
             .headers
             .get(header::AUTHORIZATION)
-            .ok_or_else(|| HttpError::from(AppError::Unauthorized("Missing Authorization header".into())))?
+            .ok_or_else(|| {
+                HttpError::from(AppError::Unauthorized(
+                    "Missing Authorization header".into(),
+                ))
+            })?
             .to_str()
-            .map_err(|_| HttpError::from(AppError::Unauthorized("Invalid Authorization header encoding".into())))?;
+            .map_err(|_| {
+                HttpError::from(AppError::Unauthorized(
+                    "Invalid Authorization header encoding".into(),
+                ))
+            })?;
 
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| HttpError::from(AppError::Unauthorized("Authorization scheme must be Bearer".into())))?;
+        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+            HttpError::from(AppError::Unauthorized(
+                "Authorization scheme must be Bearer".into(),
+            ))
+        })?;
 
         let account_id = state
             .auth_service

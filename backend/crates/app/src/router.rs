@@ -5,18 +5,14 @@ use crate::config::AppConfig;
 use crate::http::error::{AppJson, HttpError};
 use crate::http::extract::{AuthenticatedAccount, ClientIp};
 use crate::openapi::{HealthResponse, SourceResponse};
-use crate::rate_limit::{
-    rate_limit_api_middleware, rate_limit_signup_middleware, RateLimiter,
-};
+use crate::rate_limit::{RateLimiter, rate_limit_api_middleware, rate_limit_signup_middleware};
 use auth::{AuthResponse, AuthService};
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{
-        sse::{Event, KeepAlive, Sse},
-    },
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
-    Json, Router,
 };
 use futures_util::stream::{Stream, StreamExt};
 use hazards::HazardService;
@@ -267,13 +263,10 @@ pub async fn realtime_sse_handler(
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, HttpError> {
     bbox.validate()?;
 
-    let hazard_stream = state
-        .realtime_service
-        .stream_hazards(client_ip.0, bbox)?;
+    let hazard_stream = state.realtime_service.stream_hazards(client_ip.0, bbox)?;
 
-    let event_stream = hazard_stream.map(|hazard| {
-        Event::default().event("hazard").json_data(&*hazard)
-    });
+    let event_stream =
+        hazard_stream.map(|hazard| Event::default().event("hazard").json_data(&*hazard));
 
     Ok(Sse::new(event_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

@@ -17,8 +17,14 @@ pub const CLIENT_IPV6_PREFIX: u8 = 64;
 /// Trunca una dirección IP a la subred de la longitud de prefijo solicitada (v4 para IPv4, v6 para IPv6).
 pub fn network_of(ip: IpAddr, v4: u8, v6: u8) -> IpNet {
     match ip {
-        IpAddr::V4(a) => Ipv4Net::new(a, v4).expect("IPv4 prefix must be <= 32").trunc().into(),
-        IpAddr::V6(a) => Ipv6Net::new(a, v6).expect("IPv6 prefix must be <= 128").trunc().into(),
+        IpAddr::V4(a) => Ipv4Net::new(a, v4)
+            .expect("IPv4 prefix must be <= 32")
+            .trunc()
+            .into(),
+        IpAddr::V6(a) => Ipv6Net::new(a, v6)
+            .expect("IPv6 prefix must be <= 128")
+            .trunc()
+            .into(),
     }
 }
 
@@ -82,7 +88,9 @@ impl GeoJsonPoint {
         let lon = self.lon();
         let lat = self.lat();
         if !lon.is_finite() || !lat.is_finite() {
-            return Err(AppError::Validation("Coordinates must be finite numbers".into()));
+            return Err(AppError::Validation(
+                "Coordinates must be finite numbers".into(),
+            ));
         }
         if !(-180.0..=180.0).contains(&lon) {
             return Err(AppError::Validation(format!(
@@ -131,13 +139,19 @@ impl BoundingBox {
             || !self.max_lon.is_finite()
             || !self.max_lat.is_finite()
         {
-            return Err(AppError::Validation("Bbox bounds must be finite numbers".into()));
+            return Err(AppError::Validation(
+                "Bbox bounds must be finite numbers".into(),
+            ));
         }
         if !(-180.0..=180.0).contains(&self.min_lon) || !(-180.0..=180.0).contains(&self.max_lon) {
-            return Err(AppError::Validation("Bbox longitude out of range [-180, 180]".into()));
+            return Err(AppError::Validation(
+                "Bbox longitude out of range [-180, 180]".into(),
+            ));
         }
         if !(-90.0..=90.0).contains(&self.min_lat) || !(-90.0..=90.0).contains(&self.max_lat) {
-            return Err(AppError::Validation("Bbox latitude out of range [-90, 90]".into()));
+            return Err(AppError::Validation(
+                "Bbox latitude out of range [-90, 90]".into(),
+            ));
         }
         if self.min_lon >= self.max_lon {
             return Err(AppError::Validation(
@@ -354,7 +368,11 @@ pub trait HazardNotifier: Send + Sync {
 
 #[async_trait]
 pub trait GeocodingProvider: Send + Sync {
-    async fn search_address(&self, query: &str, limit: usize) -> Result<Vec<GeocodingItem>, AppError>;
+    async fn search_address(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GeocodingItem>, AppError>;
 }
 
 #[cfg(test)]

@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Gabriel Piñones
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use futures_util::stream::Stream;
 use futures_util::StreamExt as FuturesStreamExt;
+use futures_util::stream::Stream;
 use shared::{AppError, BoundingBox, Hazard, HazardNotifier, IpNet};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast::{self, Receiver, Sender};
-use tokio_stream::{wrappers::BroadcastStream, StreamExt as TokioStreamExt};
+use tokio_stream::{StreamExt as TokioStreamExt, wrappers::BroadcastStream};
 
 pub const DEFAULT_MAX_TOTAL_CONNECTIONS: usize = 8192;
 pub const DEFAULT_MAX_CONNECTIONS_PER_KEY: usize = 25;
@@ -223,10 +223,7 @@ mod tests {
 
         service.broadcast_hazard(&fuera);
         service.broadcast_hazard(&dentro);
-        assert_eq!(
-            FuturesStreamExt::next(&mut s2).await.unwrap().id,
-            dentro.id
-        ); // filtro por bbox
+        assert_eq!(FuturesStreamExt::next(&mut s2).await.unwrap().id, dentro.id); // filtro por bbox
 
         tokio::time::advance(DEFAULT_MAX_CONNECTION_DURATION + Duration::from_secs(1)).await;
         assert!(FuturesStreamExt::next(&mut s2).await.is_none()); // corte a los 30 min

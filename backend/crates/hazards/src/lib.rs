@@ -62,19 +62,18 @@ impl HazardRecord {
             })
             .vote = vote;
 
-        let (up, down) = self
-            .ballots
-            .values()
-            .filter(|b| b.counts)
-            .fold((0, 0), |(u, d), b| match b.vote {
-                Vote::Up => (u + 1, d),
-                Vote::Down => (u, d + 1),
-            });
+        let (up, down) =
+            self.ballots
+                .values()
+                .filter(|b| b.counts)
+                .fold((0, 0), |(u, d), b| match b.vote {
+                    Vote::Up => (u + 1, d),
+                    Vote::Down => (u, d + 1),
+                });
 
         self.hazard.upvotes = up;
         self.hazard.downvotes = down;
-        self.hazard.status =
-            evaluate_hazard_status(self.hazard.hazard_type, up, down, threshold);
+        self.hazard.status = evaluate_hazard_status(self.hazard.hazard_type, up, down, threshold);
         &self.hazard
     }
 }
@@ -192,7 +191,10 @@ impl HazardService {
 
             // Validar expiración (devuelve NotFound)
             if record.hazard.expires_at <= now {
-                return Err(AppError::NotFound(format!("Hazard {} has expired", hazard_id)));
+                return Err(AppError::NotFound(format!(
+                    "Hazard {} has expired",
+                    hazard_id
+                )));
             }
 
             record.cast(
@@ -318,7 +320,10 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Confirmed);
         assert_eq!(hazard.upvotes, 1);
         assert_eq!(hazard.downvotes, 0);
@@ -334,7 +339,10 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Unconfirmed);
         assert_eq!(hazard.upvotes, 1);
         assert_eq!(hazard.downvotes, 0);
@@ -350,7 +358,10 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Confirmed);
         assert_eq!(hazard.upvotes, 1);
     }
@@ -365,33 +376,48 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Unconfirmed);
         assert_eq!(hazard.upvotes, 1);
 
         // Voter 2 from subnet 2 upvotes: total effective upvotes = 2, net = 2 < 3 -> Unconfirmed
         let voter_2 = Uuid::new_v4();
-        let updated = service.vote_hazard(hazard.id, voter_2, Vote::Up, ip("192.168.2.10")).await.unwrap();
+        let updated = service
+            .vote_hazard(hazard.id, voter_2, Vote::Up, ip("192.168.2.10"))
+            .await
+            .unwrap();
         assert_eq!(updated.upvotes, 2);
         assert_eq!(updated.downvotes, 0);
         assert_eq!(updated.status, HazardStatus::Unconfirmed);
 
         // Voter 3 from subnet 3 upvotes: total effective upvotes = 3, net = 3 >= 3 -> Confirmed!
         let voter_3 = Uuid::new_v4();
-        let updated = service.vote_hazard(hazard.id, voter_3, Vote::Up, ip("192.168.3.10")).await.unwrap();
+        let updated = service
+            .vote_hazard(hazard.id, voter_3, Vote::Up, ip("192.168.3.10"))
+            .await
+            .unwrap();
         assert_eq!(updated.upvotes, 3);
         assert_eq!(updated.downvotes, 0);
         assert_eq!(updated.status, HazardStatus::Confirmed);
 
         // Voter 4 from subnet 4 downvotes: upvotes = 3, downvotes = 1, net = 2 < 3 -> Unconfirmed again
         let voter_4 = Uuid::new_v4();
-        let updated = service.vote_hazard(hazard.id, voter_4, Vote::Down, ip("192.168.4.10")).await.unwrap();
+        let updated = service
+            .vote_hazard(hazard.id, voter_4, Vote::Down, ip("192.168.4.10"))
+            .await
+            .unwrap();
         assert_eq!(updated.upvotes, 3);
         assert_eq!(updated.downvotes, 1);
         assert_eq!(updated.status, HazardStatus::Unconfirmed);
 
         // Voter 4 changes vote to Up: upvotes = 4, downvotes = 0, net = 4 >= 3 -> Confirmed!
-        let updated = service.vote_hazard(hazard.id, voter_4, Vote::Up, ip("192.168.4.10")).await.unwrap();
+        let updated = service
+            .vote_hazard(hazard.id, voter_4, Vote::Up, ip("192.168.4.10"))
+            .await
+            .unwrap();
         assert_eq!(updated.upvotes, 4);
         assert_eq!(updated.downvotes, 0);
         assert_eq!(updated.status, HazardStatus::Confirmed);
@@ -408,30 +434,45 @@ mod tests {
         };
 
         // Atacante crea reporte desde 192.168.1.10 (/24)
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Unconfirmed);
         assert_eq!(hazard.upvotes, 1);
 
         // Atacante vota desde cuenta 2 en la misma subred /24 (192.168.1.50)
         let account_b = Uuid::new_v4();
-        let v2 = service.vote_hazard(hazard.id, account_b, Vote::Up, ip("192.168.1.50")).await.unwrap();
+        let v2 = service
+            .vote_hazard(hazard.id, account_b, Vote::Up, ip("192.168.1.50"))
+            .await
+            .unwrap();
         assert_eq!(v2.upvotes, 1); // Deduplicado: no sube el conteo efectivo
         assert_eq!(v2.status, HazardStatus::Unconfirmed);
 
         // Atacante vota desde cuenta 3 en la misma subred /24 (192.168.1.99)
         let account_c = Uuid::new_v4();
-        let v3 = service.vote_hazard(hazard.id, account_c, Vote::Up, ip("192.168.1.99")).await.unwrap();
+        let v3 = service
+            .vote_hazard(hazard.id, account_c, Vote::Up, ip("192.168.1.99"))
+            .await
+            .unwrap();
         assert_eq!(v3.upvotes, 1); // Permanece en 1
         assert_eq!(v3.status, HazardStatus::Unconfirmed);
 
         // Consenso real: votos desde redes externas independientes
         let external_1 = Uuid::new_v4();
-        let v4 = service.vote_hazard(hazard.id, external_1, Vote::Up, ip("10.0.1.10")).await.unwrap();
+        let v4 = service
+            .vote_hazard(hazard.id, external_1, Vote::Up, ip("10.0.1.10"))
+            .await
+            .unwrap();
         assert_eq!(v4.upvotes, 2);
         assert_eq!(v4.status, HazardStatus::Unconfirmed);
 
         let external_2 = Uuid::new_v4();
-        let v5 = service.vote_hazard(hazard.id, external_2, Vote::Up, ip("10.0.2.10")).await.unwrap();
+        let v5 = service
+            .vote_hazard(hazard.id, external_2, Vote::Up, ip("10.0.2.10"))
+            .await
+            .unwrap();
         assert_eq!(v5.upvotes, 3);
         assert_eq!(v5.status, HazardStatus::Confirmed); // Ahora sí se confirma legítimamente
     }
@@ -447,42 +488,63 @@ mod tests {
         };
 
         // 1. Creador registra reporte desde subnet_a
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Unconfirmed);
         assert_eq!(hazard.upvotes, 1);
         assert_eq!(hazard.downvotes, 0);
 
         // 2. Misma cuenta vota +1 rotando a subnet_b -> No debe sumar
-        let v1 = service.vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.2.10")).await.unwrap();
+        let v1 = service
+            .vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.2.10"))
+            .await
+            .unwrap();
         assert_eq!(v1.upvotes, 1);
         assert_eq!(v1.downvotes, 0);
         assert_eq!(v1.status, HazardStatus::Unconfirmed);
 
         // 3. Misma cuenta vota +1 rotando a subnet_c -> No debe sumar ni confirmar
-        let v2 = service.vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.3.10")).await.unwrap();
+        let v2 = service
+            .vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.3.10"))
+            .await
+            .unwrap();
         assert_eq!(v2.upvotes, 1);
         assert_eq!(v2.downvotes, 0);
         assert_eq!(v2.status, HazardStatus::Unconfirmed);
 
         // 4. Misma cuenta vota -1 desde subnet_d -> Actualiza su voto original en subnet_a a Down
-        let v3 = service.vote_hazard(hazard.id, creator_id, Vote::Down, ip("192.168.4.10")).await.unwrap();
+        let v3 = service
+            .vote_hazard(hazard.id, creator_id, Vote::Down, ip("192.168.4.10"))
+            .await
+            .unwrap();
         assert_eq!(v3.upvotes, 0);
         assert_eq!(v3.downvotes, 1);
         assert_eq!(v3.status, HazardStatus::Unconfirmed);
 
         // 5. Misma cuenta vuelve a votar +1 desde subnet_e -> Su voto original pasa a Up
-        let v4 = service.vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.5.10")).await.unwrap();
+        let v4 = service
+            .vote_hazard(hazard.id, creator_id, Vote::Up, ip("192.168.5.10"))
+            .await
+            .unwrap();
         assert_eq!(v4.upvotes, 1);
         assert_eq!(v4.downvotes, 0);
         assert_eq!(v4.status, HazardStatus::Unconfirmed);
 
         // 6. Cuentas legítimas distintas en subnet_b y subnet_c confirman
         let user_b = Uuid::new_v4();
-        let v_b = service.vote_hazard(hazard.id, user_b, Vote::Up, ip("192.168.2.10")).await.unwrap();
+        let v_b = service
+            .vote_hazard(hazard.id, user_b, Vote::Up, ip("192.168.2.10"))
+            .await
+            .unwrap();
         assert_eq!(v_b.upvotes, 2);
 
         let user_c = Uuid::new_v4();
-        let v_c = service.vote_hazard(hazard.id, user_c, Vote::Up, ip("192.168.3.10")).await.unwrap();
+        let v_c = service
+            .vote_hazard(hazard.id, user_c, Vote::Up, ip("192.168.3.10"))
+            .await
+            .unwrap();
         assert_eq!(v_c.upvotes, 3);
         assert_eq!(v_c.status, HazardStatus::Confirmed);
     }
@@ -498,23 +560,40 @@ mod tests {
         };
 
         // Dispositivo móvil 1 en prefijo 2001:db8:85a3:0::/64
-        let hazard = service.create_hazard(creator_id, &req, ip("2001:db8:85a3:0::1")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("2001:db8:85a3:0::1"))
+            .await
+            .unwrap();
         assert_eq!(hazard.status, HazardStatus::Unconfirmed);
         assert_eq!(hazard.upvotes, 1);
 
         // Otra cuenta en el mismo dispositivo o subred /64
         let user_same_64 = Uuid::new_v4();
-        let v1 = service.vote_hazard(hazard.id, user_same_64, Vote::Up, ip("2001:db8:85a3:0:ffff::2")).await.unwrap();
+        let v1 = service
+            .vote_hazard(
+                hazard.id,
+                user_same_64,
+                Vote::Up,
+                ip("2001:db8:85a3:0:ffff::2"),
+            )
+            .await
+            .unwrap();
         assert_eq!(v1.upvotes, 1); // Deduplicado dentro del mismo /64
 
         // Otro usuario móvil legítimo con su propio /64 (2001:db8:85a3:1::/64)
         let user_ext_1 = Uuid::new_v4();
-        let v2 = service.vote_hazard(hazard.id, user_ext_1, Vote::Up, ip("2001:db8:85a3:1::1")).await.unwrap();
+        let v2 = service
+            .vote_hazard(hazard.id, user_ext_1, Vote::Up, ip("2001:db8:85a3:1::1"))
+            .await
+            .unwrap();
         assert_eq!(v2.upvotes, 2);
 
         // Tercer usuario móvil con su propio /64 (2001:db8:85a3:2::/64)
         let user_ext_2 = Uuid::new_v4();
-        let v3 = service.vote_hazard(hazard.id, user_ext_2, Vote::Up, ip("2001:db8:85a3:2::1")).await.unwrap();
+        let v3 = service
+            .vote_hazard(hazard.id, user_ext_2, Vote::Up, ip("2001:db8:85a3:2::1"))
+            .await
+            .unwrap();
         assert_eq!(v3.upvotes, 3);
         assert_eq!(v3.status, HazardStatus::Confirmed);
     }
@@ -529,14 +608,23 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        let hazard = service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        let hazard = service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         let voter = Uuid::new_v4();
 
-        let v1 = service.vote_hazard(hazard.id, voter, Vote::Up, ip("192.168.2.10")).await.unwrap();
+        let v1 = service
+            .vote_hazard(hazard.id, voter, Vote::Up, ip("192.168.2.10"))
+            .await
+            .unwrap();
         assert_eq!(v1.upvotes, 2);
 
         // Votar exactamente lo mismo no incrementa de nuevo
-        let v2 = service.vote_hazard(hazard.id, voter, Vote::Up, ip("192.168.2.10")).await.unwrap();
+        let v2 = service
+            .vote_hazard(hazard.id, voter, Vote::Up, ip("192.168.2.10"))
+            .await
+            .unwrap();
         assert_eq!(v2.upvotes, 2);
         assert_eq!(v2.downvotes, 0);
     }
@@ -547,7 +635,10 @@ mod tests {
         let non_existent_id = Uuid::new_v4();
         let voter = Uuid::new_v4();
 
-        match service.vote_hazard(non_existent_id, voter, Vote::Up, ip("192.168.1.10")).await {
+        match service
+            .vote_hazard(non_existent_id, voter, Vote::Up, ip("192.168.1.10"))
+            .await
+        {
             Err(AppError::NotFound(_)) => (),
             other => panic!("Expected NotFound, got {:?}", other),
         }
@@ -565,7 +656,10 @@ mod tests {
             location: GeoJsonPoint::new(-70.65, -33.45),
         };
 
-        service.create_hazard(creator_id, &req, ip("192.168.1.10")).await.unwrap();
+        service
+            .create_hazard(creator_id, &req, ip("192.168.1.10"))
+            .await
+            .unwrap();
         // Al tener TTL = 0, expires_at ya pasó o es now
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
@@ -588,6 +682,9 @@ mod tests {
         assert_eq!(VoterNetwork::from_ip(v4).0.to_string(), "192.168.1.0/24");
 
         let v6: IpAddr = "2001:db8:85a3:0:1234:8a2e:370:7334".parse().unwrap();
-        assert_eq!(VoterNetwork::from_ip(v6).0.to_string(), "2001:db8:85a3::/64");
+        assert_eq!(
+            VoterNetwork::from_ip(v6).0.to_string(),
+            "2001:db8:85a3::/64"
+        );
     }
 }

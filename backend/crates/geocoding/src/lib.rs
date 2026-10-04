@@ -22,7 +22,11 @@ impl PhotonGeocodingService {
 
 #[async_trait]
 impl GeocodingProvider for PhotonGeocodingService {
-    async fn search_address(&self, query: &str, limit: usize) -> Result<Vec<GeocodingItem>, AppError> {
+    async fn search_address(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GeocodingItem>, AppError> {
         // TODO(verify): Implementar llamada GET a {photon_url}/api?q={query}&limit={limit}
         // y mapear la respuesta GeoJSON FeatureCollection a GeocodingItem
         tracing::debug!(query = %query, limit = limit, "Forwarding geocoding query to Photon");

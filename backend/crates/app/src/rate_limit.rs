@@ -67,9 +67,9 @@ impl RateLimiter {
         if inner.records.len() > 10_000
             && now.duration_since(inner.last_pruned) >= Duration::from_secs(60)
         {
-            inner
-                .records
-                .retain(|_, (last_time, _)| now.duration_since(*last_time) < Duration::from_secs(3600));
+            inner.records.retain(|_, (last_time, _)| {
+                now.duration_since(*last_time) < Duration::from_secs(3600)
+            });
             inner.last_pruned = now;
         }
 
@@ -101,9 +101,7 @@ fn enforce_client_rate_limit(
 ) -> Result<(), HttpError> {
     let key = shared::client_network(client_ip).to_string();
     if !limiter.check(budget, &key) {
-        return Err(HttpError::from(AppError::RateLimited(
-            error_message.into(),
-        )));
+        return Err(HttpError::from(AppError::RateLimited(error_message.into())));
     }
     Ok(())
 }

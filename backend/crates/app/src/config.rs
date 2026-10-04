@@ -79,7 +79,8 @@ impl AppConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let env_str = lookup_trimmed(&lookup, "ENVIRONMENT").unwrap_or_else(|| "production".to_string());
+        let env_str =
+            lookup_trimmed(&lookup, "ENVIRONMENT").unwrap_or_else(|| "production".to_string());
         let environment = if env_str.eq_ignore_ascii_case("development") {
             Environment::Development
         } else {
@@ -132,24 +133,27 @@ impl AppConfig {
             }
         };
 
-        let valhalla_url =
-            lookup_trimmed(&lookup, "VALHALLA_URL").unwrap_or_else(|| "http://localhost:8002".to_string());
-        let photon_url =
-            lookup_trimmed(&lookup, "PHOTON_URL").unwrap_or_else(|| "http://localhost:2322".to_string());
+        let valhalla_url = lookup_trimmed(&lookup, "VALHALLA_URL")
+            .unwrap_or_else(|| "http://localhost:8002".to_string());
+        let photon_url = lookup_trimmed(&lookup, "PHOTON_URL")
+            .unwrap_or_else(|| "http://localhost:2322".to_string());
 
         let rate_limit_rpm = parse_lookup_var(&lookup, "RATE_LIMIT_REQUESTS_PER_MINUTE", 60u64)?;
         if rate_limit_rpm == 0 {
             return Err("RATE_LIMIT_REQUESTS_PER_MINUTE must be at least 1".into());
         }
 
-        let confirmation_threshold = parse_lookup_var(&lookup, "HAZARD_CONFIRMATION_THRESHOLD", 3i32)?;
+        let confirmation_threshold =
+            parse_lookup_var(&lookup, "HAZARD_CONFIRMATION_THRESHOLD", 3i32)?;
         if confirmation_threshold < 1 {
             return Err("HAZARD_CONFIRMATION_THRESHOLD must be at least 1".into());
         }
 
         let default_ttl_hours = parse_lookup_var(&lookup, "HAZARD_DEFAULT_TTL_HOURS", 24i64)?;
         if !(1..=8760).contains(&default_ttl_hours) {
-            return Err("HAZARD_DEFAULT_TTL_HOURS must be between 1 and 8760 hours (1 year)".into());
+            return Err(
+                "HAZARD_DEFAULT_TTL_HOURS must be between 1 and 8760 hours (1 year)".into(),
+            );
         }
 
         let source_repo_url = lookup_trimmed(&lookup, "SOURCE_REPO_URL")
@@ -202,7 +206,11 @@ mod tests {
     use super::*;
 
     fn mock_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string())
+        move |key| {
+            vars.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+        }
     }
 
     #[test]
@@ -232,7 +240,12 @@ mod tests {
             ("JWT_SECRET", "super_secret_key_at_least_32_bytes_long_here"),
         ]));
         assert!(config.is_err());
-        assert!(config.err().unwrap().contains("default placeholder password"));
+        assert!(
+            config
+                .err()
+                .unwrap()
+                .contains("default placeholder password")
+        );
 
         let config2 = AppConfig::from_lookup(mock_env(&[
             ("ENVIRONMENT", "production"),
@@ -247,7 +260,10 @@ mod tests {
     fn test_production_valid_configuration() {
         let config = AppConfig::from_lookup(mock_env(&[
             ("ENVIRONMENT", "production"),
-            ("DATABASE_URL", "postgres://user:real_prod_password@db:5432/db"),
+            (
+                "DATABASE_URL",
+                "postgres://user:real_prod_password@db:5432/db",
+            ),
             ("JWT_SECRET", "super_secure_random_production_key_32_bytes"),
         ]))
         .unwrap();
@@ -262,7 +278,12 @@ mod tests {
             ("RATE_LIMIT_REQUESTS_PER_MINUTE", "not_a_number"),
         ]));
         assert!(config.is_err());
-        assert!(config.err().unwrap().contains("RATE_LIMIT_REQUESTS_PER_MINUTE"));
+        assert!(
+            config
+                .err()
+                .unwrap()
+                .contains("RATE_LIMIT_REQUESTS_PER_MINUTE")
+        );
     }
 
     #[test]
@@ -338,9 +359,11 @@ mod tests {
             ("TRUSTED_PROXIES", "172.20.0.0/16, not_a_valid_cidr/99"),
         ]));
         assert!(config.is_err());
-        assert!(config
-            .err()
-            .unwrap()
-            .contains("Invalid IP or CIDR in TRUSTED_PROXIES"));
+        assert!(
+            config
+                .err()
+                .unwrap()
+                .contains("Invalid IP or CIDR in TRUSTED_PROXIES")
+        );
     }
 }

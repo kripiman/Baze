@@ -35,7 +35,9 @@ impl Modify for SecurityAddon {
                     HttpBuilder::new()
                         .scheme(HttpAuthScheme::Bearer)
                         .bearer_format("Token")
-                        .description(Some("Anonymous bearer token in format: baze_anon_<uuid>.<sig>"))
+                        .description(Some(
+                            "Anonymous bearer token in format: baze_anon_<uuid>.<sig>",
+                        ))
                         .build(),
                 ),
             );

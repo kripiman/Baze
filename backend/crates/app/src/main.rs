@@ -4,7 +4,7 @@
 use auth::AuthService;
 use baze_app::config::AppConfig;
 use baze_app::rate_limit::RateLimiter;
-use baze_app::router::{create_router, AppState};
+use baze_app::router::{AppState, create_router};
 use geocoding::PhotonGeocodingService;
 use hazards::HazardService;
 use realtime::RealtimeService;
@@ -20,8 +20,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "baze_server=info,baze_app=info,tower_http=info".into());
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let config = AppConfig::from_env()
-        .map_err(|e| format!("Configuration initialization failed: {}", e))?;
+    let config =
+        AppConfig::from_env().map_err(|e| format!("Configuration initialization failed: {}", e))?;
 
     tracing::info!(
         environment = %config.environment,
@@ -60,10 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Wiring arquitectónico: Routing comparte la misma instancia Arc<HazardService> que implementa CorridorHazards
-    let routing_service = ValhallaRoutingService::new(
-        config.valhalla_url.clone(),
-        hazard_service.clone(),
-    );
+    let routing_service =
+        ValhallaRoutingService::new(config.valhalla_url.clone(), hazard_service.clone());
 
     let geocoding_service = Arc::new(PhotonGeocodingService::new(config.photon_url.clone()));
     let rate_limiter = RateLimiter::new();

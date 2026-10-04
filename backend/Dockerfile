@@ -39,6 +39,12 @@ WORKDIR /app
 # Copiar el binario compilado
 COPY --from=builder /app/target/release/baze-server /usr/local/bin/baze-server
 
+# Hash del commit con el que se construye la imagen (AGPL, sección 13: /source debe apuntar al código
+# desplegado). Se declara aquí, tras la compilación, para no invalidar la caché de los stages anteriores.
+# En producción el backend se niega a arrancar si no es un hash hexadecimal válido.
+ARG GIT_COMMIT_HASH=
+ENV GIT_COMMIT_HASH=${GIT_COMMIT_HASH}
+
 # Variables de entorno por defecto
 ENV PORT=8080
 ENV HOST=0.0.0.0
@@ -48,5 +54,9 @@ ENV ENVIRONMENT=production
 USER baze:baze
 
 EXPOSE 8080
+
+# La imagen no trae curl ni shell útil: el propio binario hace la comprobación.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/baze-server", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/baze-server"]

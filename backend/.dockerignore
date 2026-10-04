@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Keep local build output, VCS data and any secret out of the build context (`COPY . .`).
+target/
+**/target/
+.git/
+.gitignore
+.env
+.env.*
+*.pem
+*.key
+*.log
+Dockerfile
+.dockerignore

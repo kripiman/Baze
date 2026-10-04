@@ -211,6 +211,10 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+          # Los contenedores sin IP fija se reparten solo la mitad alta; la baja (.2) queda libre
+          # para Caddy. Sin esto, uno que arranque antes puede recibir .2 y Caddy no arranca.
+          ip_range: 172.30.0.128/25
 
 volumes:
   postgis_data:

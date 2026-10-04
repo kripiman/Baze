@@ -7,6 +7,7 @@ Reads the output of `docker compose config --format json` on stdin and exits non
 violation, if the stack drifts from the rules in AGENTS.md. Used by scripts/compose-check.sh.
 """
 
+import ipaddress
 import json
 import sys
 
@@ -75,6 +76,24 @@ def check(cfg):
             errors.append("backend: must wait for the migrate service")
         elif backend["depends_on"]["migrate"].get("condition") != "service_completed_successfully":
             errors.append("backend: must wait for migrate to complete successfully")
+    # Caddy's fixed address must be reserved (outside the dynamic pool) and be the only trusted proxy,
+    # otherwise another container could receive it first or forge X-Real-IP.
+    internal_cfg = (cfg["networks"].get("internal", {}).get("ipam") or {}).get("config") or [{}]
+    subnet = internal_cfg[0].get("subnet")
+    ip_range = internal_cfg[0].get("ip_range")
+    caddy_ip = ((services["caddy"].get("networks") or {}).get("internal") or {}).get("ipv4_address")
+    if not (subnet and caddy_ip):
+        errors.append("caddy needs a fixed ipv4_address on a network with a fixed subnet")
+    else:
+        address = ipaddress.ip_address(caddy_ip)
+        if address not in ipaddress.ip_network(subnet):
+            errors.append(f"caddy address {caddy_ip} is outside the subnet {subnet}")
+        if not ip_range:
+            errors.append("the internal network has no ip_range: a container could be given caddy's address first")
+        elif address in ipaddress.ip_network(ip_range):
+            errors.append(f"caddy address {caddy_ip} lies inside the dynamic ip_range {ip_range}")
+        if backend_env.get("TRUSTED_PROXIES") != caddy_ip:
+            errors.append(f"backend TRUSTED_PROXIES must be exactly caddy's address ({caddy_ip})")
     postgis_mounts = [m.get("target", "") for m in services["postgis"].get("volumes", [])]
     if "/docker-entrypoint-initdb.d" not in postgis_mounts:
         errors.append("postgis: the role bootstrap script is not mounted")

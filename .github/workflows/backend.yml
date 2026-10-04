@@ -7,11 +7,13 @@ on:
   push:
     paths:
       - 'backend/**'
+      - 'contracts/**'
       - 'scripts/check-toolchain-sync.sh'
       - '.github/workflows/backend.yml'
   pull_request:
     paths:
       - 'backend/**'
+      - 'contracts/**'
       - 'scripts/check-toolchain-sync.sh'
       - '.github/workflows/backend.yml'
 
@@ -58,6 +60,9 @@ jobs:
 
       - name: Run Unit & Integration Tests
         run: cargo test --locked --workspace --all-features
+
+      - name: Check the OpenAPI contract is up to date
+        run: cargo run --locked -p baze-app --bin export-openapi -- --check
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14

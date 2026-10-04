@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env
+.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check dev-env openapi
 
 help:
 	@echo "Baze Monorepo Management"
@@ -13,6 +13,7 @@ help:
 	@echo "backend-fmt    : Apply rustfmt to the Rust backend"
 	@echo "backend-clippy : Run clippy (-D warnings) on the Rust backend"
 	@echo "backend-test   : Run the Rust backend unit tests (no database needed)"
+	@echo "openapi        : Regenerate contracts/openapi.json from the backend code"
 	@echo "backend-deny   : cargo-deny checks (bans, licenses, sources, advisories)"
 	@echo "toolchain-check: Verify that every Rust toolchain pin agrees"
 	@echo "android-build  : Compile Android application (assembleDebug)"
@@ -37,6 +38,7 @@ backend-check: toolchain-check
 	cd backend && cargo fmt --all -- --check
 	cd backend && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 	cd backend && cargo test --locked --workspace
+	cd backend && cargo run --locked -q -p baze-app --bin export-openapi -- --check
 
 backend-test:
 	cd backend && cargo test --locked --workspace
@@ -46,6 +48,9 @@ backend-fmt:
 
 backend-clippy:
 	cd backend && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+openapi:
+	cd backend && cargo run --locked -q -p baze-app --bin export-openapi
 
 backend-deny:
 	cd backend && cargo deny check

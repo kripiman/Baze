@@ -33,12 +33,13 @@ baze/
 ├── .editorconfig             # Reglas de formato unificadas
 ├── .gitignore                # Reglas de exclusión de git
 ├── .gitattributes            # Normalización LF y binarios
-├── scripts/                  # check-toolchain-sync, compose-check, gen-env y e2e/ (regresión de abuso contra el binario real)
+├── scripts/                  # check-toolchain-sync, compose-check, check-style, gen-env y e2e/ (regresión de abuso y smoke de motores)
 ├── .github/
 │   ├── CODEOWNERS, dependabot.yml, PULL_REQUEST_TEMPLATE.md, ISSUE_TEMPLATE/
 │   └── workflows/
 │       ├── backend.yml       # CI de Rust: fmt, clippy -D warnings, tests con PostGIS, e2e, contrato OpenAPI, cargo-deny, MSRV 1.88
-│       ├── infra.yml         # CI de infraestructura: compose, Caddyfile, shellcheck y pila real con sus invariantes
+│       ├── infra.yml         # CI de infraestructura: compose, Caddyfile, shellcheck, estilo del mapa y pila real con sus invariantes
+│       ├── data-smoke.yml    # Pipeline de datos y motores reales (Valhalla, Photon) sobre Mónaco, a través del backend
 │       ├── android.yml       # CI de Android: lint, test, checkPurity, assembleDebug/Release (R8), licencias
 │       ├── security.yml      # Avisos RustSec y crates retirados (programado)
 │       └── secrets.yml       # Auditoría de secretos con Gitleaks
@@ -76,15 +77,17 @@ baze/
 │       ├── navigation/       # Foreground service de navegación + conexión SSE
 │       └── reports/          # Creación y votación de reportes
 ├── infra/                    # Despliegue en VPS
-│   ├── compose.yaml          # Orquestación (Caddy, Backend, PostGIS, Valhalla, Photon)
+│   ├── compose.yaml          # Orquestación (Caddy, Backend, PostGIS; Valhalla y Photon en el perfil `engines`)
 │   ├── compose.dev.yaml      # Superposición solo para desarrollo (puertos en 127.0.0.1)
 │   ├── caddy/Caddyfile       # Configuración TLS y proxy reverso
 │   ├── postgres/init/        # Roles de BD (propietario que migra, `baze_app` sin DDL)
+│   ├── photon/Dockerfile     # Imagen propia de Photon (jar de la release verificado por sha256)
 │   └── .env.example          # Plantilla de variables de entorno (sin secretos; `make dev-env` los genera)
 ├── data/                     # Pipeline de ingestión y compilación de datos OSM
 │   ├── README.md             # Instrucciones paso a paso
-│   ├── scripts/              # 01-download, 02-pmtiles, 03-valhalla, 04-photon, 05-publish-static
-│   ├── styles/               # style.json de MapLibre, sprites y glifos
+│   ├── scripts/              # 01-download, 02-pmtiles, 03-valhalla (+ container/), 04-photon, 05-publish-static
+│   ├── fixtures/             # Volcado mínimo de Photon (Mónaco) para el smoke test
+│   ├── styles/               # style.json de MapLibre (marcador {{PMTILES_URL}}, sin sprites ni glifos)
 │   └── out/                  # Artefactos compilados (.pmtiles, grafo, índice)
 └── docs/
     ├── architecture.md       # Diagrama y detalle de reglas de dominio
@@ -148,12 +151,15 @@ bash scripts/compose-check.sh
 url="$(bash scripts/e2e/prepare-db.sh "$DATABASE_URL")"
 python3 scripts/e2e/audit_regression.py --database-url "$url" --admin-database-url "$DATABASE_URL" --through 10
 
-# Ejecutar el pipeline de datos (desde la raíz; también `make data-build`)
+# Ejecutar el pipeline de datos (desde la raíz; también `make data-build`). El 04 exige una fuente (ver data/README.md)
 bash data/scripts/01-download-extract.sh
 bash data/scripts/02-build-pmtiles.sh
 bash data/scripts/03-build-valhalla.sh
-bash data/scripts/04-build-photon.sh
+PHOTON_IMPORT_FILE=data/fixtures/photon-monaco.jsonl bash data/scripts/04-build-photon.sh
 bash data/scripts/05-publish-static.sh
+
+# Estilo del mapa (también `make style-check`)
+python3 scripts/check-style.py
 ```
 
 ---
@@ -177,7 +183,7 @@ bash data/scripts/05-publish-static.sh
 1. **Clasificación de Reportes**:
    - `warning` (vidrio, bache, calzada irregular): solo genera alertas visuales/sonoras.
    - `blocking` (calle cortada, obra, inundación): afecta el ruteo **solo cuando está confirmado** por el umbral de votos comunitarios.
-2. **Evitación en Valhalla**: El backend solicita la ruta base a Valhalla, comprueba en PostGIS si la geometría interseca bloqueos confirmados, y solo ante intersecciones relanza la solicitud enviando `exclude_polygons`.
+2. **Evitación en Valhalla**: El backend solicita la ruta base a Valhalla, comprueba en PostGIS si la geometría interseca bloqueos confirmados, y solo ante intersecciones relanza la solicitud enviando `exclude_polygons`; la ruta nueva se comprueba otra vez. **Fail-closed**: una ruta que cruza un cierre confirmado nunca se entrega (si no hay alternativa, `404`; si hay demasiados cierres, `503`).
 3. **Alertas y SSE**: El servidor entrega peligros cercanos a la ruta en la respuesta inicial. El stream SSE solo notifica eventos nuevos o cambiados en el bounding box de la ruta activa (`event: hazard`). Un cliente que se queda atrás recibe `event: resync` y debe volver a pedir `GET /api/v1/hazards`: nunca se pierden eventos en silencio.
 4. **Expiración**: Los reportes se descartan mediante `expires_at` en toda consulta SQL y un job periódico purga registros caducados.
 
@@ -188,7 +194,8 @@ bash data/scripts/05-publish-static.sh
 - **NO** implementar microservicios, Kafka, Redis, RabbitMQ ni clústeres de Kubernetes.
 - **NO** almacenar ni transmitir trazas GPS continuas (telemetría) de los usuarios.
 - **NO** exponer puertos de PostGIS, Valhalla o Photon en interfaces públicas de Internet.
-- **NO** utilizar imágenes Docker con tag `latest`. Todas las imágenes deben tener versiones fijadas.
+- **NO** utilizar imágenes Docker con tag `latest`. Todas las imágenes deben tener versiones fijadas (las de terceros, por digest).
+- **NO** registrar texto de búsqueda ni coordenadas de rutas en ningún log (backend, Valhalla, Photon, Caddy).
 - **NO** incluir credenciales, secretos, keystores ni archivos `.env` en el repositorio.
 - **NO** acoplar crates de dominio entre sí.
 
@@ -201,5 +208,6 @@ Antes de considerar una tarea completada:
 2. Si cambian las rutas, los esquemas o la documentación de la API: `make openapi` y commitear `contracts/openapi.json`.
 3. Validar Docker Compose y shell: `bash scripts/compose-check.sh` (`make compose-check`) y `shellcheck` sobre `scripts/` y `data/scripts/`.
 4. Si el SDK de Android está configurado: `cd android && ./gradlew lint test checkPurity assembleDebug`.
-5. Tras empujar, comprobar que los workflows de GitHub pasan (backend, infra, android, secrets, security).
-6. Confirmar que no se hayan generado archivos no deseados fuera de `.gitignore`.
+5. Si cambian `data/`, `infra/photon/` o los clientes de los motores: el workflow `data-smoke.yml` (Mónaco, motores reales) debe pasar.
+6. Tras empujar, comprobar que los workflows de GitHub pasan (backend, infra, android, data-smoke, secrets, security).
+7. Confirmar que no se hayan generado archivos no deseados fuera de `.gitignore`.

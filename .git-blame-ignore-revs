@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Piñones
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Commits that only reformat code. Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# style(backend): apply rustfmt
+1e8686f9c1f47c98e2c5b68e05cfda3d037ae36e

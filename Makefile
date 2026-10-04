@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy
+.PHONY: help dev-up dev-down backend-check android-build data-build backend-test backend-fmt backend-clippy backend-deny toolchain-check
 
 help:
 	@echo "Baze Monorepo Management"
 	@echo "------------------------"
 	@echo "dev-up         : Start infrastructure services (PostGIS, Valhalla, Photon, Caddy)"
 	@echo "dev-down       : Stop infrastructure services"
-	@echo "backend-check  : Validate, format check and clippy for Rust backend"
+	@echo "backend-check  : Format check, clippy (-D warnings) and unit tests for the Rust backend"
+	@echo "backend-fmt    : Apply rustfmt to the Rust backend"
+	@echo "backend-clippy : Run clippy (-D warnings) on the Rust backend"
+	@echo "backend-test   : Run the Rust backend unit tests (no database needed)"
+	@echo "backend-deny   : cargo-deny checks (bans, licenses, sources, advisories)"
+	@echo "toolchain-check: Verify that every Rust toolchain pin agrees"
 	@echo "android-build  : Compile Android application (assembleDebug)"
 	@echo "data-build     : Run OSM data preparation pipeline (PMTiles, Valhalla, Photon)"
 
@@ -27,16 +32,27 @@ dev-down:
 		docker compose -f infra/compose.yaml --env-file infra/.env down; \
 	fi
 
-backend-check:
-	cargo fmt --manifest-path backend/Cargo.toml --all -- --check
-	cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings
-	cargo test --manifest-path backend/Cargo.toml --workspace
+# The recipes `cd backend` so rustup picks up backend/rust-toolchain.toml
+# (it is resolved from the working directory, not from --manifest-path).
+backend-check: toolchain-check
+	cd backend && cargo fmt --all -- --check
+	cd backend && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+	cd backend && cargo test --locked --workspace
+
+backend-test:
+	cd backend && cargo test --locked --workspace
 
 backend-fmt:
-	cargo fmt --manifest-path backend/Cargo.toml --all
+	cd backend && cargo fmt --all
 
 backend-clippy:
-	cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets -- -D warnings
+	cd backend && cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+backend-deny:
+	cd backend && cargo deny check
+
+toolchain-check:
+	bash scripts/check-toolchain-sync.sh
 
 android-build:
 	cd android && ./gradlew assembleDebug

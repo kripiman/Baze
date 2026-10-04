@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::http::error::ErrorResponse;
-use auth::AuthResponse;
 use serde::Serialize;
 use shared::{
-    BoundingBox, CreateHazardRequest, GeoJsonLineString, GeoJsonPoint, GeoJsonPolygon,
-    GeocodingItem, GeocodingQuery, Hazard, HazardCategory, HazardStatus, HazardType,
-    HazardVoteRequest, RouteManeuver, RouteRequest, RouteResponse, Vote,
+    AuthResponse, BoundingBox, CreateHazardRequest, GeoJsonLineString, GeoJsonPoint,
+    GeoJsonPolygon, GeocodingItem, GeocodingQuery, Hazard, HazardCategory, HazardStatus,
+    HazardType, HazardVoteRequest, RouteManeuver, RouteRequest, RouteResponse, Vote,
 };
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi, ToSchema};
@@ -37,7 +36,7 @@ impl Modify for SecurityAddon {
                         .scheme(HttpAuthScheme::Bearer)
                         .bearer_format("Token")
                         .description(Some(
-                            "Anonymous bearer token in format: baze_anon_<uuid>.<sig>",
+                            "Anonymous bearer token returned by POST /api/v1/auth/anonymous, in the form baze_v2.<payload>.<mac>. It expires (see expires_at).",
                         ))
                         .build(),
                 ),

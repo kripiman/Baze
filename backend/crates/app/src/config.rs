@@ -38,6 +38,10 @@ pub struct AppConfig {
     pub valhalla_url: String,
     pub photon_url: String,
     pub jwt_secret: String,
+    /// During a secret rotation: the secret tokens were signed with before. Verifies only.
+    pub jwt_secret_previous: Option<String>,
+    /// How long an anonymous account's token stays valid.
+    pub auth_token_ttl_days: u32,
     pub rate_limit_rpm: u64,
     pub confirmation_threshold: i32,
     pub default_ttl_hours: i64,
@@ -238,6 +242,23 @@ impl AppConfig {
             }
         };
 
+        let jwt_secret_previous = lookup_trimmed(&lookup, "JWT_SECRET_PREVIOUS");
+        if let Some(previous) = &jwt_secret_previous {
+            if previous == &jwt_secret {
+                return Err("JWT_SECRET_PREVIOUS must differ from JWT_SECRET".into());
+            }
+            if is_prod && let Some(reason) = jwt_secret_weakness(previous) {
+                return Err(format!(
+                    "JWT_SECRET_PREVIOUS in production must be a secure random secret too (rejected: {reason})"
+                ));
+            }
+        }
+
+        let auth_token_ttl_days = parse_lookup_var(&lookup, "AUTH_TOKEN_TTL_DAYS", 180u32)?;
+        if !(1..=730).contains(&auth_token_ttl_days) {
+            return Err("AUTH_TOKEN_TTL_DAYS must be between 1 and 730".into());
+        }
+
         let valhalla_url = lookup_trimmed(&lookup, "VALHALLA_URL")
             .unwrap_or_else(|| "http://localhost:8002".to_string());
         let photon_url = lookup_trimmed(&lookup, "PHOTON_URL")
@@ -315,6 +336,8 @@ impl AppConfig {
             valhalla_url,
             photon_url,
             jwt_secret,
+            jwt_secret_previous,
+            auth_token_ttl_days,
             rate_limit_rpm,
             confirmation_threshold,
             default_ttl_hours,
@@ -765,5 +788,49 @@ mod tests {
             let err = AppConfig::from_lookup(prod_vars(&[(key, value)])).expect_err(value);
             assert!(err.contains(key), "{err}");
         }
+    }
+
+    #[test]
+    fn token_lifetime_has_a_default_and_bounds() {
+        let config = AppConfig::from_lookup(prod_vars(&[])).unwrap();
+        assert_eq!(config.auth_token_ttl_days, 180);
+        assert!(config.jwt_secret_previous.is_none());
+
+        for bad in ["0", "731", "-1", "abc"] {
+            let err =
+                AppConfig::from_lookup(prod_vars(&[("AUTH_TOKEN_TTL_DAYS", bad)])).unwrap_err();
+            assert!(err.contains("AUTH_TOKEN_TTL_DAYS"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_previous_secret_is_optional_but_held_to_the_same_standard() {
+        let previous = strong_secret();
+        let config =
+            AppConfig::from_lookup(prod_vars(&[("JWT_SECRET_PREVIOUS", &previous)])).unwrap();
+        assert_eq!(
+            config.jwt_secret_previous.as_deref(),
+            Some(previous.as_str())
+        );
+
+        for weak in [
+            "short",
+            "change_me_to_a_random_32_bytes_secret_key_in_production",
+        ] {
+            let err =
+                AppConfig::from_lookup(prod_vars(&[("JWT_SECRET_PREVIOUS", weak)])).unwrap_err();
+            assert!(err.contains("JWT_SECRET_PREVIOUS"), "{weak}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_previous_secret_must_differ_from_the_current_one() {
+        let same = strong_secret();
+        let err = AppConfig::from_lookup(prod_vars(&[
+            ("JWT_SECRET", &same),
+            ("JWT_SECRET_PREVIOUS", &same),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("must differ"), "{err}");
     }
 }

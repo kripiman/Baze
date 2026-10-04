@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use auth::AuthService;
+use auth::token::TokenKeys;
 use baze_app::config::AppConfig;
 use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
@@ -10,8 +11,8 @@ use geocoding::PhotonGeocodingService;
 use hazards::HazardService;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
-use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     match std::env::args().nth(1).as_deref() {
@@ -55,14 +56,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Starting Baze Backend Modular Monolith"
     );
 
-    // Conexión perezosa a PostGIS (permite arranque sin requerir base activa para endpoints en memoria)
-    let pool = PgPoolOptions::new()
-        .max_connections(20)
-        .connect_lazy(&config.database_url)?;
+    // La base de datos es obligatoria: las cuentas viven en ella. Se espera a que esté lista, y se
+    // rechazan los roles con privilegios de más y los esquemas sin migrar o alterados.
+    let pool = baze_app::db::connect(&config.database_url, 20, Duration::from_secs(30)).await?;
+    if !config.is_development() {
+        baze_app::db::assert_least_privilege(&pool).await?;
+    }
+    baze_app::db::assert_schema_current(&pool).await?;
 
     // Inicialización de servicios de dominio
     let realtime_service = RealtimeService::new(2048);
-    let auth_service = AuthService::new(pool.clone(), config.jwt_secret.clone());
+    let auth_service = Arc::new(AuthService::new(
+        pool.clone(),
+        TokenKeys::new(
+            config.jwt_secret.as_bytes(),
+            config
+                .jwt_secret_previous
+                .as_deref()
+                .map(|s| s.as_bytes().to_vec()),
+        ),
+        chrono::Duration::days(i64::from(config.auth_token_ttl_days)),
+    ));
     let hazard_service = Arc::new(HazardService::new(
         pool.clone(),
         config.confirmation_threshold,

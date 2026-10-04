@@ -6,7 +6,6 @@ use crate::http::error::{AppJson, ErrorResponse, HttpError};
 use crate::http::extract::{AuthenticatedAccount, ClientIp};
 use crate::openapi::{HealthResponse, SourceResponse};
 use crate::rate_limit::{RateLimiter, rate_limit_api_middleware, rate_limit_signup_middleware};
-use auth::{AuthResponse, AuthService};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -19,9 +18,9 @@ use hazards::HazardService;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use shared::{
-    BoundingBox, CreateHazardRequest, GeocodingItem, GeocodingProvider, GeocodingQuery, Hazard,
-    HazardVoteRequest, MAX_LIST_BBOX_SPAN_DEGREES, MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest,
-    RouteResponse,
+    AccountService, AuthResponse, BoundingBox, CreateHazardRequest, GeocodingItem,
+    GeocodingProvider, GeocodingQuery, Hazard, HazardVoteRequest, MAX_LIST_BBOX_SPAN_DEGREES,
+    MAX_STREAM_BBOX_SPAN_DEGREES, RouteRequest, RouteResponse,
 };
 use std::{sync::Arc, time::Duration};
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -36,7 +35,7 @@ use uuid::Uuid;
 
 pub struct AppState {
     pub config: AppConfig,
-    pub auth_service: AuthService,
+    pub auth_service: Arc<dyn AccountService>,
     pub hazard_service: Arc<HazardService>,
     pub routing_service: ValhallaRoutingService,
     pub geocoding_service: Arc<dyn GeocodingProvider>,
@@ -219,13 +218,13 @@ pub async fn list_hazards_handler(
 pub async fn create_hazard_handler(
     State(state): State<Arc<AppState>>,
     client_ip: ClientIp,
-    AuthenticatedAccount(account_id): AuthenticatedAccount,
+    AuthenticatedAccount(account): AuthenticatedAccount,
     AppJson(payload): AppJson<CreateHazardRequest>,
 ) -> Result<(StatusCode, AppJson<Hazard>), HttpError> {
     payload.validate()?;
     let hazard = state
         .hazard_service
-        .create_hazard(account_id, &payload, client_ip.0)
+        .create_hazard(account.account_id, &payload, client_ip.0)
         .await?;
     Ok((StatusCode::CREATED, AppJson(hazard)))
 }
@@ -256,12 +255,12 @@ pub async fn vote_hazard_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     client_ip: ClientIp,
-    AuthenticatedAccount(account_id): AuthenticatedAccount,
+    AuthenticatedAccount(account): AuthenticatedAccount,
     AppJson(payload): AppJson<HazardVoteRequest>,
 ) -> Result<AppJson<Hazard>, HttpError> {
     let updated = state
         .hazard_service
-        .vote_hazard(id, account_id, payload.vote, client_ip.0)
+        .vote_hazard(id, account.account_id, payload.vote, client_ip.0)
         .await?;
     Ok(AppJson(updated))
 }

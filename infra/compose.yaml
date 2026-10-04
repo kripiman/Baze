@@ -82,6 +82,9 @@ services:
       - VALHALLA_URL=${VALHALLA_URL:-http://valhalla:8002}
       - PHOTON_URL=${PHOTON_URL:-http://photon:2322}
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET explicitly in .env}
+      # Rotación del secreto: el anterior sigue verificando tokens hasta que caduquen. Vacío = ninguno.
+      - JWT_SECRET_PREVIOUS=${JWT_SECRET_PREVIOUS:-}
+      - AUTH_TOKEN_TTL_DAYS=${AUTH_TOKEN_TTL_DAYS:-}
       - RATE_LIMIT_REQUESTS_PER_MINUTE=${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
       - HAZARD_CONFIRMATION_THRESHOLD=${HAZARD_CONFIRMATION_THRESHOLD:-3}
       - HAZARD_DEFAULT_TTL_HOURS=${HAZARD_DEFAULT_TTL_HOURS:-24}

@@ -659,10 +659,12 @@
     "schemas": {
       "AuthResponse": {
         "type": "object",
+        "description": "Response to creating an anonymous account.",
         "required": [
           "account_id",
           "token",
-          "created_at"
+          "created_at",
+          "expires_at"
         ],
         "properties": {
           "account_id": {
@@ -673,8 +675,14 @@
             "type": "string",
             "format": "date-time"
           },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The token stops working at this instant; create a new account afterwards."
+          },
           "token": {
-            "type": "string"
+            "type": "string",
+            "description": "Bearer token: `baze_v2.<payload>.<mac>`. Send it as `Authorization: Bearer <token>`."
           }
         }
       },
@@ -1092,7 +1100,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "Token",
-        "description": "Anonymous bearer token in format: baze_anon_<uuid>.<sig>"
+        "description": "Anonymous bearer token returned by POST /api/v1/auth/anonymous, in the form baze_v2.<payload>.<mac>. It expires (see expires_at)."
       }
     }
   },

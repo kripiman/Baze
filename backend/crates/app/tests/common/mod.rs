@@ -3,10 +3,11 @@
 
 //! Shared helpers for the HTTP-level tests. They drive the real router in-process with
 //! `tower::ServiceExt::oneshot`, so no socket and no database are needed (the Postgres pool is lazy
-//! and the services under test do not touch it yet).
+//! and the services under test do not touch it; accounts are an in-memory fake).
 #![allow(dead_code)]
 
-use auth::AuthService;
+use async_trait::async_trait;
+use auth::token::{self, TokenKeys};
 use axum::{
     Router,
     body::Body,
@@ -15,16 +16,90 @@ use axum::{
 use baze_app::config::AppConfig;
 use baze_app::rate_limit::RateLimiter;
 use baze_app::router::{AppState, build_app};
+use chrono::{DateTime, Duration, Utc};
 use geocoding::PhotonGeocodingService;
 use hazards::HazardService;
 use http_body_util::BodyExt;
 use realtime::RealtimeService;
 use routing::ValhallaRoutingService;
 use serde_json::{Value, json};
-use shared::GeocodingProvider;
+use shared::{AccountContext, AccountService, AppError, AuthResponse, GeocodingProvider};
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
+use uuid::Uuid;
+
+/// In-memory stand-in for the database-backed account service. It issues and verifies the real
+/// tokens (the same `auth::token` code), so HTTP tests exercise authentication faithfully without a
+/// database. The real service is covered by the `db-tests` of the auth crate.
+pub struct FakeAccounts {
+    keys: TokenKeys,
+    ttl: Duration,
+    accounts: Mutex<HashMap<Uuid, (DateTime<Utc>, bool)>>,
+}
+
+impl FakeAccounts {
+    pub fn new(secret: &str) -> Self {
+        Self {
+            keys: TokenKeys::new(secret.as_bytes(), None),
+            ttl: Duration::days(180),
+            accounts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers an account created at `created_at` and returns its id and a valid token.
+    pub fn add_account(&self, created_at: DateTime<Utc>) -> (Uuid, String) {
+        let account_id = Uuid::new_v4();
+        self.accounts
+            .lock()
+            .unwrap()
+            .insert(account_id, (created_at, true));
+        let (token, _) = token::issue(&self.keys, account_id, Utc::now(), self.ttl);
+        (account_id, token)
+    }
+
+    /// What an operator does to an abusive account: its token stops working at once.
+    pub fn deactivate(&self, account_id: Uuid) {
+        if let Some(entry) = self.accounts.lock().unwrap().get_mut(&account_id) {
+            entry.1 = false;
+        }
+    }
+}
+
+#[async_trait]
+impl AccountService for FakeAccounts {
+    async fn create_anonymous_account(&self) -> Result<AuthResponse, AppError> {
+        let now = Utc::now();
+        let (account_id, token) = self.add_account(now);
+        let claims = token::verify(&self.keys, &token, now).expect("a token just issued verifies");
+        Ok(AuthResponse {
+            account_id,
+            token,
+            created_at: now,
+            expires_at: claims.expires_at,
+        })
+    }
+
+    async fn authenticate(&self, token: &str) -> Result<AccountContext, AppError> {
+        let invalid = || AppError::Unauthorized("Invalid authorization token".into());
+        let claims = token::verify(&self.keys, token, Utc::now()).map_err(|error| match error {
+            token::TokenError::Expired => AppError::Unauthorized("Token expired".into()),
+            _ => invalid(),
+        })?;
+        match self.accounts.lock().unwrap().get(&claims.account_id) {
+            Some((created_at, true)) => Ok(AccountContext {
+                account_id: claims.account_id,
+                created_at: *created_at,
+            }),
+            _ => Err(invalid()),
+        }
+    }
+}
+
+pub fn test_accounts(config: &AppConfig) -> Arc<FakeAccounts> {
+    Arc::new(FakeAccounts::new(&config.jwt_secret))
+}
 
 pub fn test_config() -> AppConfig {
     AppConfig::from_lookup(|key| (key == "ENVIRONMENT").then(|| "development".to_string()))
@@ -44,18 +119,34 @@ pub fn test_app_with(config: AppConfig) -> Router {
 /// The geocoder is the one collaborator that is trivial to replace, which makes it the handle for
 /// simulating a slow or failing backing service.
 pub fn test_app_with_geocoder(config: AppConfig, geocoder: Arc<dyn GeocodingProvider>) -> Router {
+    let accounts = test_accounts(&config);
+    build_test_app(config, accounts, geocoder)
+}
+
+/// For tests that need to create accounts of a given age or deactivate them.
+pub fn test_app_with_accounts(config: AppConfig, accounts: Arc<FakeAccounts>) -> Router {
+    let geocoder =
+        Arc::new(PhotonGeocodingService::new(config.photon_url.clone()).expect("geocoding client"));
+    build_test_app(config, accounts, geocoder)
+}
+
+fn build_test_app(
+    config: AppConfig,
+    accounts: Arc<FakeAccounts>,
+    geocoder: Arc<dyn GeocodingProvider>,
+) -> Router {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://localhost/dummy")
         .expect("lazy pool");
     let realtime_service = RealtimeService::new(16);
     let hazard_service = Arc::new(HazardService::new(
-        pool.clone(),
+        pool,
         config.confirmation_threshold,
         config.default_ttl_hours,
         Arc::new(realtime_service.clone()),
     ));
     let state = AppState {
-        auth_service: AuthService::new(pool, config.jwt_secret.clone()),
+        auth_service: accounts,
         routing_service: ValhallaRoutingService::new(
             config.valhalla_url.clone(),
             hazard_service.clone(),

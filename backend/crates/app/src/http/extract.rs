@@ -8,10 +8,9 @@ use axum::{
     extract::{ConnectInfo, FromRef, FromRequestParts},
     http::{header, request::Parts},
 };
-use shared::AppError;
+use shared::{AccountContext, AppError};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// Extractor de IP del cliente seguro contra suplantación (anti-spoofing).
 /// Solo confía en X-Real-IP si la conexión física proviene de un proxy de confianza (loopback o red interna).
@@ -62,7 +61,7 @@ fn bearer_token(header_value: &str) -> Option<&str> {
 
 /// Extractor de cuenta anónima autenticada por token Bearer HMAC.
 /// Aplica límite por cuenta para operaciones de mutación.
-pub struct AuthenticatedAccount(pub Uuid);
+pub struct AuthenticatedAccount(pub AccountContext);
 
 impl<S> FromRequestParts<S> for AuthenticatedAccount
 where
@@ -95,16 +94,12 @@ where
             ))
         })?;
 
-        let account_id = state
-            .auth_service
-            .validate_token(token)
-            .await
-            .map_err(HttpError::from)?;
+        let account = state.auth_service.authenticate(token).await?;
 
         // Límite de mutaciones por cuenta
         state
             .rate_limiter
-            .check_with_retry(&ACCOUNT_MUTATION_BUDGET, &account_id.to_string())
+            .check_with_retry(&ACCOUNT_MUTATION_BUDGET, &account.account_id.to_string())
             .map_err(|retry_after| {
                 HttpError::rate_limited(
                     "Account mutation rate limit exceeded. Please retry later.",
@@ -112,7 +107,7 @@ where
                 )
             })?;
 
-        Ok(AuthenticatedAccount(account_id))
+        Ok(AuthenticatedAccount(account))
     }
 }
 

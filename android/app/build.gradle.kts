@@ -19,7 +19,7 @@ licensee {
 tasks.register("checkLicenses") {
     group = "verification"
     description = "Fails if the release APK ships a dependency whose license is not approved"
-    dependsOn("licenseeRelease")
+    dependsOn("licenseeAndroidRelease")
 }
 
 dependencies {

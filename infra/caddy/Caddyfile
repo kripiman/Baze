@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Gabriel Piñones
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+{
+    # Plazos del servidor: sin ellos un cliente que no termina de enviar la petición ocupa una
+    # conexión indefinidamente. No se fija `write` para no cortar los streams SSE.
+    servers {
+        timeouts {
+            read_header 10s
+            read_body 30s
+            idle 2m
+        }
+    }
+}
+
 {$DOMAIN:localhost} {
     # Compresión gzip y zstd
     encode gzip zstd
@@ -11,37 +23,42 @@
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), camera=(), microphone=()"
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
     }
 
-    # Servir archivos estáticos (PMTiles, estilos, sprites, glifos)
-    # CORS restringido exclusivamente al servicio de teselas y artefactos estáticos
+    # La documentación interactiva de la API nunca es pública; el contrato vive en contracts/openapi.json.
+    @docs path /swagger-ui /swagger-ui/* /api-docs /api-docs/*
+    respond @docs 404
+
+    # Artefactos públicos estáticos (PMTiles, estilos). Solo se monta data/out/public, sin listado de
+    # directorios. El cliente es nativo, así que no hace falta CORS. Las peticiones Range las atiende
+    # file_server, que es lo que necesita PMTiles.
     handle_path /static/* {
-        header {
-            Access-Control-Allow-Origin "*"
-            Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-            Access-Control-Allow-Headers "Range, Content-Type"
-            Access-Control-Expose-Headers "Content-Range, Content-Length"
-        }
         root * /var/www/static
-        file_server {
-            browse
-        }
+        file_server
     }
 
     # Proxy reverso al backend Rust (API, /health, /source, /api/v1/*)
-    # Sin duplicación de cabeceras Access-Control-Allow-Origin
     handle {
+        # Ninguna petición legítima supera unos pocos KiB; el backend aplica su propio límite.
+        request_body {
+            max_size 16KB
+        }
         reverse_proxy backend:8080 {
+            # El backend solo confía en X-Real-IP si la conexión viene de la IP de este contenedor.
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
             # Soporte de streaming para SSE
             flush_interval -1
+            transport http {
+                dial_timeout 3s
+                response_header_timeout 15s
+            }
         }
     }
 
-    log {
-        output stdout
-        format console
-    }
+    # Sin registro de accesos a propósito: la línea de petición lleva la caja geográfica del mapa y el
+    # texto de búsqueda, y el par remoto lleva la IP. Los errores y el arranque siguen en stderr.
 }
